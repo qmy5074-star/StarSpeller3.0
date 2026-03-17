@@ -33,8 +33,11 @@ const LibraryPage: React.FC<LibraryPageProps> = ({ userId, allDailyStats, viewin
     const allWords = await getAllWords(userId);
     const wMap: Record<string, DBWordRecord[]> = {};
     allWords.forEach(w => {
-      if (!wMap[w.dateAdded]) wMap[w.dateAdded] = [];
-      wMap[w.dateAdded].push(w);
+      const dates = w.datesAdded && w.datesAdded.length > 0 ? w.datesAdded : [w.dateAdded];
+      dates.forEach(d => {
+          if (!wMap[d]) wMap[d] = [];
+          wMap[d].push(w);
+      });
     });
     setWordsMap(wMap);
   };

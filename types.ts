@@ -1,5 +1,6 @@
 export interface WordData {
   word: string;
+  partOfSpeech?: string; // e.g. n., adj., adv., v.
   parts: string[];
   partsPronunciation?: string[]; // New: TTS respelling for each part (e.g. "ti" -> "tie")
   root: string;
@@ -14,6 +15,7 @@ export interface WordData {
 export interface User {
   id: string;
   username: string;
+  password?: string;
   apiKey: string;
   isDefault: boolean;
   hasSeeded?: boolean; // New: Track if initial words have been seeded
@@ -35,6 +37,7 @@ export interface DBWordRecord {
   word: string;
   data: WordData;
   dateAdded: string;     // format: Mon Jan 01 2024
+  datesAdded?: string[]; // New: Array of dates when the word was added/practiced
   lastReviewed: string;  // format: Mon Jan 01 2024
   bestTime?: number;     // fastest completion time in seconds
 }

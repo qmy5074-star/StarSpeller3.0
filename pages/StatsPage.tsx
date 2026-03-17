@@ -5,9 +5,10 @@ import { getAllDailyStats } from '../services/dbService';
 interface StatsPageProps {
   userId: string;
   onBack: () => void;
+  onStartRandomRhythm: () => void;
 }
 
-const StatsPage: React.FC<StatsPageProps> = ({ userId, onBack }) => {
+const StatsPage: React.FC<StatsPageProps> = ({ userId, onBack, onStartRandomRhythm }) => {
   const [totalStars, setTotalStars] = useState(0);
   const [totalBadges, setTotalBadges] = useState(0);
   const [maxBpm, setMaxBpm] = useState(80);
@@ -60,8 +61,18 @@ const StatsPage: React.FC<StatsPageProps> = ({ userId, onBack }) => {
         </div>
       </div>
       
-      <div className="mt-8 p-4 bg-gray-50 rounded-xl text-center text-gray-500 text-sm">
-        Keep practicing daily to increase your stats!
+      <div className="mt-8 flex flex-col gap-4">
+        <button 
+          onClick={onStartRandomRhythm}
+          className="w-full bg-gradient-to-r from-violet-500 to-fuchsia-500 text-white font-black py-4 rounded-2xl shadow-lg hover:scale-[1.02] active:scale-95 transition-all flex items-center justify-center gap-3 text-lg"
+        >
+          <span className="text-2xl">🎵</span>
+          Random Rhythm Challenge
+        </button>
+
+        <div className="p-4 bg-gray-50 rounded-xl text-center text-gray-500 text-sm">
+          Keep practicing daily to increase your stats!
+        </div>
       </div>
     </div>
   );

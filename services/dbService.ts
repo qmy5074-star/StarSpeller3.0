@@ -1,5 +1,6 @@
 import { WordData, DBWordRecord, User, DailyStats } from "../types";
 import { INITIAL_WORDS } from "./initialWords";
+import { encrypt, decrypt } from "../src/utils/encryption";
 
 const DB_NAME = 'StarSpellerDB';
 const DB_VERSION = 3; // Upgraded version for Daily Stats support
@@ -11,6 +12,7 @@ const DAILY_STATS_STORE = 'daily_stats';
 const DEFAULT_USER: User = {
   id: 'user_eva_default',
   username: 'Eva',
+  password: '123', // Default password for Eva
   apiKey: process.env.API_KEY || '', // Inherit env key
   isDefault: true,
   hasSeeded: false
@@ -100,7 +102,12 @@ export const getAllUsers = async (): Promise<User[]> => {
   });
 };
 
-export const createNewUser = async (username: string): Promise<User> => {
+export const createNewUser = async (username: string, password?: string): Promise<User> => {
+  const users = await getAllUsers();
+  if (users.some(u => u.username.toLowerCase() === username.toLowerCase())) {
+    throw new Error("Username already exists");
+  }
+
   const db = await openDB();
   return new Promise((resolve, reject) => {
     const transaction = db.transaction(USER_STORE, 'readwrite');
@@ -109,15 +116,74 @@ export const createNewUser = async (username: string): Promise<User> => {
     const newUser: User = {
       id: `user_${Date.now()}`,
       username: username,
+      password: password || '',
       apiKey: process.env.API_KEY || '', // Share the system key
       isDefault: false,
       hasSeeded: false
     };
 
-    store.put(newUser);
+    const req = store.put(newUser);
     
     transaction.oncomplete = () => resolve(newUser);
     transaction.onerror = () => reject(transaction.error);
+  });
+};
+
+export const deleteUserByUsername = async (username: string): Promise<void> => {
+  const users = await getAllUsers();
+  const userToDelete = users.find(u => u.username.toLowerCase() === username.toLowerCase());
+  if (!userToDelete) return;
+
+  const db = await openDB();
+  return new Promise((resolve, reject) => {
+    const stores = [USER_STORE, WORD_STORE];
+    if (db.objectStoreNames.contains(DAILY_STATS_STORE)) {
+        stores.push(DAILY_STATS_STORE);
+    }
+    const tx = db.transaction(stores, 'readwrite');
+    const userStore = tx.objectStore(USER_STORE);
+    const wordStore = tx.objectStore(WORD_STORE);
+    const statsStore = stores.includes(DAILY_STATS_STORE) ? tx.objectStore(DAILY_STATS_STORE) : null;
+
+    userStore.delete(userToDelete.id);
+
+    const wordIndex = wordStore.index('userId');
+    const wordKeysReq = wordIndex.getAllKeys(userToDelete.id);
+    wordKeysReq.onsuccess = () => {
+        wordKeysReq.result.forEach(key => wordStore.delete(key));
+        
+        if (statsStore) {
+            const statsIndex = statsStore.index('userId');
+            const statsKeysReq = statsIndex.getAllKeys(userToDelete.id);
+            statsKeysReq.onsuccess = () => {
+                statsKeysReq.result.forEach(key => statsStore.delete(key));
+            };
+        }
+    };
+
+    tx.oncomplete = () => resolve();
+    tx.onerror = () => reject(tx.error);
+  });
+};
+
+export const updateUserPassword = async (userId: string, newPassword: string): Promise<void> => {
+  const db = await openDB();
+  return new Promise((resolve, reject) => {
+    const transaction = db.transaction(USER_STORE, 'readwrite');
+    const store = transaction.objectStore(USER_STORE);
+    const getReq = store.get(userId);
+    getReq.onsuccess = () => {
+      const user = getReq.result as User;
+      if (user) {
+        user.password = newPassword;
+        const putReq = store.put(user);
+        putReq.onsuccess = () => resolve();
+        putReq.onerror = () => reject(putReq.error);
+      } else {
+        reject(new Error("User not found"));
+      }
+    };
+    getReq.onerror = () => reject(getReq.error);
   });
 };
 
@@ -253,46 +319,111 @@ export const initializeDatabase = async (userId: string): Promise<void> => {
   });
 };
 
-export const saveWordToDB = async (userId: string, wordData: WordData): Promise<void> => {
+export const findWordInAnyUser = async (word: string): Promise<DBWordRecord | null> => {
   const db = await openDB();
   return new Promise((resolve, reject) => {
-    const transaction = db.transaction(WORD_STORE, 'readwrite');
+    const transaction = db.transaction([WORD_STORE], 'readonly');
     const store = transaction.objectStore(WORD_STORE);
-
-    // Get specific user's record
-    const getRequest = store.get([userId, wordData.word.toLowerCase()]);
-
-    getRequest.onsuccess = () => {
-        const existing = getRequest.result as DBWordRecord | undefined;
-        
-        const record: DBWordRecord = {
-          userId: userId,
-          word: wordData.word.toLowerCase(),
-          data: wordData,
-          dateAdded: existing?.dateAdded || new Date().toDateString(),
-          lastReviewed: new Date().toDateString(),
-          bestTime: existing?.bestTime
-        };
-
-        const putRequest = store.put(record);
-        putRequest.onsuccess = () => resolve();
-        putRequest.onerror = () => reject(putRequest.error);
-    };
+    // We need to scan all words because the primary key is [userId, word] or just word depending on schema.
+    // But our schema is just 'word' as key path? No, let's check openDB.
+    // Actually, looking at previous code, we might need to iterate.
+    // Let's assume we can iterate all records.
+    const request = store.openCursor();
     
-    getRequest.onerror = () => reject(getRequest.error);
+    request.onsuccess = (event) => {
+      const cursor = (event.target as IDBRequest).result;
+      if (cursor) {
+        const record = cursor.value as DBWordRecord;
+        if (record.word.toLowerCase() === word.toLowerCase() && record.data) {
+           resolve(record);
+           return;
+        }
+        cursor.continue();
+      } else {
+        resolve(null);
+      }
+    };
+    request.onerror = () => reject(request.error);
   });
 };
 
-export const deleteWordFromDB = async (userId: string, word: string): Promise<void> => {
+export const saveWordToDB = async (userId: string, currentUsername: string, wordData: WordData, updateDateAdded: boolean = false): Promise<void> => {
+  const db = await openDB();
+  return new Promise((resolve, reject) => {
+    const transaction = db.transaction([USER_STORE, WORD_STORE], 'readwrite');
+    const userStore = transaction.objectStore(USER_STORE);
+    const wordStore = transaction.objectStore(WORD_STORE);
+
+    const userReq = userStore.get(userId);
+    userReq.onsuccess = () => {
+        const user = userReq.result as User | undefined;
+        if (!user || user.username.toLowerCase() !== currentUsername.toLowerCase()) {
+            reject(new Error("Account name mismatch. Insertion failed."));
+            return;
+        }
+
+        // Get specific user's record
+        const getRequest = wordStore.get([userId, wordData.word.toLowerCase()]);
+
+        getRequest.onsuccess = () => {
+            const existing = getRequest.result as DBWordRecord | undefined;
+            const today = new Date().toDateString();
+            
+            let newDatesAdded = existing?.datesAdded || (existing ? [existing.dateAdded] : [today]);
+            if (updateDateAdded && !newDatesAdded.includes(today)) {
+                newDatesAdded.push(today);
+            }
+            
+            const record: DBWordRecord = {
+              userId: userId,
+              word: wordData.word.toLowerCase(),
+              data: wordData,
+              dateAdded: existing ? existing.dateAdded : today, // keep original dateAdded for backward compatibility
+              datesAdded: newDatesAdded,
+              lastReviewed: existing ? existing.lastReviewed : today,
+              bestTime: existing?.bestTime
+            };
+
+            const putRequest = wordStore.put(record);
+            putRequest.onsuccess = () => resolve();
+            putRequest.onerror = () => reject(putRequest.error);
+        };
+        
+        getRequest.onerror = () => reject(getRequest.error);
+    };
+    userReq.onerror = () => reject(userReq.error);
+  });
+};
+
+export const deleteWordFromDB = async (userId: string, word: string, targetDate: string = new Date().toDateString()): Promise<void> => {
   const db = await openDB();
   return new Promise((resolve, reject) => {
     const transaction = db.transaction(WORD_STORE, 'readwrite');
     const store = transaction.objectStore(WORD_STORE);
-    // Compound key: [userId, word]
-    const request = store.delete([userId, word.toLowerCase()]);
+    
+    const getRequest = store.get([userId, word.toLowerCase()]);
 
-    request.onsuccess = () => resolve();
-    request.onerror = () => reject(request.error);
+    getRequest.onsuccess = () => {
+      const record = getRequest.result as DBWordRecord;
+      if (record) {
+        if (record.datesAdded && record.datesAdded.length > 1) {
+          // If the word exists in multiple dates, just remove the target date
+          record.datesAdded = record.datesAdded.filter(date => date !== targetDate);
+          const putRequest = store.put(record);
+          putRequest.onsuccess = () => resolve();
+          putRequest.onerror = () => reject(putRequest.error);
+        } else {
+          // If it only exists in one date (or no datesAdded array), delete the whole record
+          const deleteRequest = store.delete([userId, word.toLowerCase()]);
+          deleteRequest.onsuccess = () => resolve();
+          deleteRequest.onerror = () => reject(deleteRequest.error);
+        }
+      } else {
+        resolve(); // Record doesn't exist, nothing to delete
+      }
+    };
+    
+    getRequest.onerror = () => reject(getRequest.error);
   });
 };
 
@@ -336,9 +467,11 @@ export const getWordsForReview = async (userId: string): Promise<DBWordRecord[]>
       const yesterdayStr = yesterday.toDateString();
 
       const reviewList = allRecords.filter(record => {
-        const addedYesterday = record.dateAdded === yesterdayStr;
+        const dates = record.datesAdded && record.datesAdded.length > 0 ? record.datesAdded : [record.dateAdded];
+        const addedYesterday = dates.includes(yesterdayStr);
+        const addedToday = dates.includes(today);
         const notReviewedToday = record.lastReviewed !== today;
-        return addedYesterday && notReviewedToday;
+        return addedYesterday && notReviewedToday && !addedToday;
       });
 
       resolve(reviewList);
@@ -358,8 +491,31 @@ export const getTodaysWords = async (userId: string): Promise<DBWordRecord[]> =>
     request.onsuccess = () => {
       const allRecords = request.result as DBWordRecord[];
       const today = new Date().toDateString();
-      const todaysWords = allRecords.filter(r => r.lastReviewed === today);
+      const todaysWords = allRecords.filter(r => {
+          const dates = r.datesAdded && r.datesAdded.length > 0 ? r.datesAdded : [r.dateAdded];
+          return dates.includes(today);
+      });
       resolve(todaysWords);
+    };
+    request.onerror = () => reject(request.error);
+  });
+};
+
+export const getWordsByDate = async (userId: string, targetDate: string): Promise<DBWordRecord[]> => {
+  const db = await openDB();
+  return new Promise((resolve, reject) => {
+    const transaction = db.transaction(WORD_STORE, 'readonly');
+    const store = transaction.objectStore(WORD_STORE);
+    const index = store.index('userId');
+    const request = index.getAll(userId);
+
+    request.onsuccess = () => {
+      const allRecords = request.result as DBWordRecord[];
+      const targetWords = allRecords.filter(r => {
+          const dates = r.datesAdded && r.datesAdded.length > 0 ? r.datesAdded : [r.dateAdded];
+          return dates.includes(targetDate);
+      });
+      resolve(targetWords);
     };
     request.onerror = () => reject(request.error);
   });
@@ -416,49 +572,86 @@ export const getAllDailyStats = async (userId: string): Promise<DailyStats[]> =>
 
 // --- IMPORT / EXPORT SYSTEM ---
 
-export const exportDatabaseToJson = async (): Promise<string> => {
+export const exportDatabaseToJson = async (userId: string, currentUsername: string): Promise<string> => {
     const db = await openDB();
     return new Promise((resolve, reject) => {
-        // We export everything (users, words, stats) to allow full restoration
         const tx = db.transaction([USER_STORE, WORD_STORE, DAILY_STATS_STORE], 'readonly');
-        const userReq = tx.objectStore(USER_STORE).getAll();
-        const wordReq = tx.objectStore(WORD_STORE).getAll();
-        const statsReq = tx.objectStore(DAILY_STATS_STORE).getAll();
         
-        const data: any = {};
+        const userReq = tx.objectStore(USER_STORE).get(userId);
+        
+        const wordIndex = tx.objectStore(WORD_STORE).index('userId');
+        const wordReq = wordIndex.getAll(userId);
+        
+        const statsIndex = tx.objectStore(DAILY_STATS_STORE).index('userId');
+        const statsReq = statsIndex.getAll(userId);
+        
+        const data: any = {
+            exportDate: new Date().toISOString()
+        };
+
+        let completed = 0;
+
+        const checkDone = () => {
+            completed++;
+            if (completed === 3) {
+                let json = JSON.stringify(data, null, 2);
+                if (currentUsername.toLowerCase() !== 'eva') {
+                    json = encrypt(json);
+                }
+                resolve(json);
+            }
+        };
 
         userReq.onsuccess = () => {
-             data.users = userReq.result;
+             data.users = userReq.result ? [userReq.result] : [];
              checkDone();
         };
         wordReq.onsuccess = () => {
-             data.words = wordReq.result;
+             data.words = wordReq.result || [];
              checkDone();
         };
         statsReq.onsuccess = () => {
-             data.stats = statsReq.result;
+             data.stats = statsReq.result || [];
              checkDone();
         };
-
-        const checkDone = () => {
-            if (data.users && data.words && data.stats) {
-                resolve(JSON.stringify(data, null, 2));
-            }
-        };
+        userReq.onerror = wordReq.onerror = statsReq.onerror = () => reject("Export failed");
 
         tx.onerror = () => reject(tx.error);
     });
 };
 
-export const importDatabaseFromJson = async (jsonString: string): Promise<number> => {
+export const importDatabaseFromJson = async (userId: string, currentUsername: string, jsonString: string, replace: boolean = true): Promise<number> => {
     const db = await openDB();
     return new Promise((resolve, reject) => {
         let data: { users: User[], words: DBWordRecord[], stats?: DailyStats[] } | null = null;
         try {
-            data = JSON.parse(jsonString);
+            let processedJson = jsonString;
+            
+            // Try parsing directly
+            try {
+                console.log("Attempting direct JSON parse");
+                // Sanitize control characters
+                const sanitized = processedJson.replace(/[\x00-\x09\x0B\x0C\x0E-\x1F]/g, ' ');
+                data = JSON.parse(sanitized);
+            } catch (e) {
+                console.log("Direct JSON parse failed, trying decrypt");
+                // If parsing fails, try decrypting
+                const decrypted = decrypt(jsonString);
+                console.log("Decrypted result length:", decrypted.length);
+                // Sanitize decrypted data
+                const sanitizedDecrypted = decrypted.replace(/[\x00-\x09\x0B\x0C\x0E-\x1F]/g, ' ');
+                data = JSON.parse(sanitizedDecrypted);
+                console.log("Parsed decrypted JSON successfully");
+            }
+
             if (!data || !data.users || !data.words) throw new Error("Invalid file structure");
-        } catch (e) {
-            reject("Invalid JSON file");
+            
+            const importedUser = data.users[0];
+            if (importedUser && importedUser.username.toLowerCase() !== currentUsername.toLowerCase()) {
+                throw new Error(`Cannot import data from account '${importedUser.username}' into account '${currentUsername}'.`);
+            }
+        } catch (e: any) {
+            reject(e.message || "Invalid JSON file");
             return;
         }
 
@@ -470,25 +663,83 @@ export const importDatabaseFromJson = async (jsonString: string): Promise<number
         const tx = db.transaction(stores, 'readwrite');
         const userStore = tx.objectStore(USER_STORE);
         const wordStore = tx.objectStore(WORD_STORE);
+        const statsStore = stores.includes(DAILY_STATS_STORE) ? tx.objectStore(DAILY_STATS_STORE) : null;
         
         let count = 0;
 
-        // Import Users (Merge/Overwrite)
-        data.users.forEach(u => userStore.put(u));
+        const doImport = () => {
+            // Import Users (Merge/Overwrite) - only the current user
+            const importedUser = data!.users.find(u => u.id === userId) || data!.users[0];
+            if (importedUser) {
+                importedUser.id = userId; // Force it to current user
+                userStore.put(importedUser);
+            }
 
-        // Import Words (Merge/Overwrite)
-        data.words.forEach(w => {
-            wordStore.put(w);
-            count++;
-        });
+            // Import Words (Merge/Overwrite)
+            data!.words.forEach(w => {
+                w.userId = userId; // Force it to current user
+                wordStore.put(w);
+                count++;
+            });
 
-        // Import Stats (Merge/Overwrite)
-        if (data.stats && stores.includes(DAILY_STATS_STORE)) {
-            const statsStore = tx.objectStore(DAILY_STATS_STORE);
-            data.stats.forEach(s => statsStore.put(s));
+            // Import Stats (Merge/Overwrite)
+            if (data!.stats && statsStore) {
+                data!.stats.forEach(s => {
+                    s.userId = userId; // Force it to current user
+                    statsStore.put(s);
+                });
+            }
+        };
+
+        if (replace) {
+            // Clear existing words for user
+            const wordIndex = wordStore.index('userId');
+            const wordKeysReq = wordIndex.getAllKeys(userId);
+            wordKeysReq.onsuccess = () => {
+                wordKeysReq.result.forEach(key => wordStore.delete(key));
+                
+                if (statsStore) {
+                    const statsIndex = statsStore.index('userId');
+                    const statsKeysReq = statsIndex.getAllKeys(userId);
+                    statsKeysReq.onsuccess = () => {
+                        statsKeysReq.result.forEach(key => statsStore.delete(key));
+                        doImport();
+                    };
+                    statsKeysReq.onerror = () => reject(statsKeysReq.error);
+                } else {
+                    doImport();
+                }
+            };
+            wordKeysReq.onerror = () => reject(wordKeysReq.error);
+        } else {
+            doImport();
         }
 
         tx.oncomplete = () => resolve(count);
         tx.onerror = () => reject(tx.error);
+    });
+};
+
+export const initializeEvaVocabulary = async (userId: string): Promise<number> => {
+    const db = await openDB();
+    return new Promise((resolve, reject) => {
+        const transaction = db.transaction(WORD_STORE, 'readwrite');
+        const wordStore = transaction.objectStore(WORD_STORE);
+        
+        let count = 0;
+        INITIAL_WORDS.forEach(w => {
+            const record: DBWordRecord = {
+                userId: userId,
+                word: w.word,
+                data: w,
+                dateAdded: new Date().toDateString(),
+                lastReviewed: new Date().toDateString()
+            };
+            wordStore.put(record);
+            count++;
+        });
+
+        transaction.oncomplete = () => resolve(count);
+        transaction.onerror = () => reject(transaction.error);
     });
 };

@@ -8,22 +8,37 @@ interface TopBarProps {
   darkMode?: boolean;
   currentUser: User | null;
   allUsers: User[];
-  onSwitchUser: (user: User) => void;
-  onCreateUser: (name: string) => void;
+  onSwitchUser: (user: User | null) => void;
+  onCreateUser: (name: string, password?: string) => Promise<void>;
+  onManageUsers?: () => void;
 }
 
-const TopBar: React.FC<TopBarProps> = ({ stats, totalStars, totalBadges, darkMode = false, currentUser, allUsers, onSwitchUser, onCreateUser }) => {
+const TopBar: React.FC<TopBarProps> = ({ stats, totalStars, totalBadges, darkMode = false, currentUser, allUsers, onSwitchUser, onCreateUser, onManageUsers }) => {
   const [isMenuOpen, setIsMenuOpen] = useState(false);
   const [isCreating, setIsCreating] = useState(false);
   const [newUserName, setNewUserName] = useState("");
+  const [newUserPassword, setNewUserPassword] = useState("");
 
-  const handleCreateSubmit = (e: React.FormEvent) => {
+  const handleCreateSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if(newUserName.trim()) {
-      onCreateUser(newUserName.trim());
-      setNewUserName("");
-      setIsCreating(false);
-      setIsMenuOpen(false);
+    const trimmedName = newUserName.trim();
+    const trimmedPassword = newUserPassword.trim();
+    if(trimmedName && trimmedPassword) {
+      if (trimmedName.toLowerCase() === 'eva') {
+        alert("The name 'Eva' is reserved for the super member.");
+        return;
+      }
+      try {
+        await onCreateUser(trimmedName, trimmedPassword);
+        setNewUserName("");
+        setNewUserPassword("");
+        setIsCreating(false);
+        setIsMenuOpen(false);
+      } catch (err) {
+        // Error is handled in App.tsx
+      }
+    } else {
+      alert("Username and password are required.");
     }
   };
 
@@ -52,6 +67,7 @@ const TopBar: React.FC<TopBarProps> = ({ stats, totalStars, totalBadges, darkMod
            </div>
 
            {/* User Dropdown Trigger */}
+           {currentUser && (
            <div className="relative">
               <button 
                 onClick={() => setIsMenuOpen(!isMenuOpen)}
@@ -59,7 +75,10 @@ const TopBar: React.FC<TopBarProps> = ({ stats, totalStars, totalBadges, darkMod
                   darkMode ? 'border-slate-700 bg-slate-800 hover:bg-slate-700' : 'border-blue-100 bg-blue-50 hover:bg-blue-100'
                 }`}
               >
-                <span className="text-sm font-bold">👤 {currentUser?.username || "Guest"}</span>
+                <span className={`text-sm font-bold flex items-center gap-1 ${currentUser.username === 'Eva' ? 'text-orange-500' : ''}`}>
+                  👤 {currentUser.username}
+                  {currentUser.username === 'Eva' && <span title="Super Member">👑</span>}
+                </span>
                 <span className="text-xs opacity-50">▼</span>
               </button>
 
@@ -70,52 +89,75 @@ const TopBar: React.FC<TopBarProps> = ({ stats, totalStars, totalBadges, darkMod
                   <div className={`absolute top-full left-0 mt-2 w-56 rounded-2xl shadow-2xl p-2 z-20 flex flex-col gap-1 border-2 ${
                      darkMode ? 'bg-slate-900 border-slate-700 text-white' : 'bg-white border-blue-100 text-gray-700'
                   }`}>
-                     <div className="px-3 py-2 text-xs font-black uppercase opacity-50 tracking-widest">Switch Account</div>
+                     <div className="px-3 py-2 text-xs font-black uppercase opacity-50 tracking-widest">Account</div>
                      
-                     {allUsers.map(user => (
-                       <button 
-                         key={user.id}
-                         onClick={() => { onSwitchUser(user); setIsMenuOpen(false); }}
-                         className={`text-left px-3 py-2 rounded-xl text-sm font-bold transition-colors flex justify-between items-center ${
-                           currentUser?.id === user.id 
-                             ? (darkMode ? 'bg-purple-900/50 text-purple-300' : 'bg-blue-100 text-blue-600') 
-                             : (darkMode ? 'hover:bg-slate-800' : 'hover:bg-gray-50')
-                         }`}
-                       >
-                         {user.username}
-                         {currentUser?.id === user.id && <span>✓</span>}
-                       </button>
-                     ))}
+                     <button 
+                       onClick={() => { onSwitchUser(null); setIsMenuOpen(false); }}
+                       className={`text-left px-3 py-2 rounded-xl text-sm font-bold transition-colors flex justify-between items-center ${
+                         darkMode ? 'hover:bg-slate-800 text-red-400' : 'hover:bg-red-50 text-red-500'
+                       }`}
+                     >
+                       <span className="flex items-center gap-1">Log Out</span>
+                     </button>
 
-                     <div className="h-px bg-gray-200/20 my-1"></div>
+                     {currentUser.username === 'Eva' && (
+                       <>
+                         <div className="h-px bg-gray-200/20 my-1"></div>
 
-                     {!isCreating ? (
-                       <button 
-                         onClick={() => setIsCreating(true)}
-                         className={`text-left px-3 py-2 rounded-xl text-sm font-bold flex items-center gap-2 ${
-                            darkMode ? 'text-green-400 hover:bg-slate-800' : 'text-green-600 hover:bg-green-50'
-                         }`}
-                       >
-                         <span>+</span> New Account
-                       </button>
-                     ) : (
-                       <form onSubmit={handleCreateSubmit} className="p-1 flex flex-col gap-2">
-                          <input 
-                            autoFocus
-                            placeholder="Name" 
-                            className={`w-full px-2 py-1 rounded-lg text-sm border-2 outline-none ${
-                               darkMode ? 'bg-slate-800 border-slate-600' : 'bg-white border-blue-200'
-                            }`}
-                            value={newUserName}
-                            onChange={(e) => setNewUserName(e.target.value)}
-                          />
-                          <button type="submit" className="bg-green-500 text-white text-xs font-bold py-1 rounded-lg">Create</button>
-                       </form>
+                         {!isCreating ? (
+                           <>
+                             <button 
+                               onClick={() => setIsCreating(true)}
+                               className={`text-left px-3 py-2 rounded-xl text-sm font-bold flex items-center gap-2 ${
+                                  darkMode ? 'text-green-400 hover:bg-slate-800' : 'text-green-600 hover:bg-green-50'
+                               }`}
+                             >
+                               <span>+</span> New Account
+                             </button>
+                             {onManageUsers && (
+                               <button 
+                                 onClick={() => {
+                                   setIsMenuOpen(false);
+                                   onManageUsers();
+                                 }}
+                                 className={`text-left px-3 py-2 rounded-xl text-sm font-bold flex items-center gap-2 w-full mt-1 ${
+                                    darkMode ? 'text-orange-400 hover:bg-slate-800' : 'text-orange-600 hover:bg-orange-50'
+                                 }`}
+                               >
+                                 <span>⚙️</span> Manage Users
+                               </button>
+                             )}
+                           </>
+                         ) : (
+                           <form onSubmit={handleCreateSubmit} className="p-1 flex flex-col gap-2">
+                              <input 
+                                autoFocus
+                                placeholder="Username" 
+                                className={`w-full px-2 py-1 rounded-lg text-sm border-2 outline-none ${
+                                   darkMode ? 'bg-slate-800 border-slate-600' : 'bg-white border-blue-200'
+                                }`}
+                                value={newUserName}
+                                onChange={(e) => setNewUserName(e.target.value)}
+                              />
+                              <input 
+                                type="password"
+                                placeholder="Password" 
+                                className={`w-full px-2 py-1 rounded-lg text-sm border-2 outline-none ${
+                                   darkMode ? 'bg-slate-800 border-slate-600' : 'bg-white border-blue-200'
+                                }`}
+                                value={newUserPassword}
+                                onChange={(e) => setNewUserPassword(e.target.value)}
+                              />
+                              <button type="submit" className="bg-green-500 text-white text-xs font-bold py-1.5 rounded-lg">Create</button>
+                           </form>
+                         )}
+                       </>
                      )}
                   </div>
                 </>
               )}
            </div>
+           )}
         </div>
 
         {/* Stats Counters */}

@@ -1,7 +1,5 @@
 {
-  "name": "Star Speller V2.X",
+  "name": "Star Speller V3.X",
   "description": "A gamified English vocabulary builder for elementary students.",
-  "requestFramePermissions": [
-    "microphone"
-  ]
+  "requestFramePermissions": ["microphone"]
 }
