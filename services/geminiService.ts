@@ -1,14 +1,15 @@
-import { GoogleGenAI, Type } from "@google/genai";
+import { GoogleGenAI, Type, ThinkingLevel } from "@google/genai";
 import { WordData } from "../types";
 
-const apiKey = process.env.API_KEY || '';
+const getApiKey = () => process.env.GEMINI_API_KEY || process.env.API_KEY || '';
 
-const ai = new GoogleGenAI({ apiKey });
-
-// Helper for retrying async operations
-async function withRetry<T>(operation: () => Promise<T>, retries = 2, delay = 1000): Promise<T> {
+// Helper for retrying async operations with timeout
+async function withRetry<T>(operation: () => Promise<T>, retries = 2, delay = 1000, timeoutMs = 60000): Promise<T> {
   try {
-    return await operation();
+    const timeoutPromise = new Promise<never>((_, reject) => {
+      setTimeout(() => reject(new Error('Operation timed out')), timeoutMs);
+    });
+    return await Promise.race([operation(), timeoutPromise]);
   } catch (error: any) {
     const errString = error?.message || JSON.stringify(error);
     
@@ -23,70 +24,155 @@ async function withRetry<T>(operation: () => Promise<T>, retries = 2, delay = 10
 
     // Other fatal errors
     const isFatal = errString.includes('PERMISSION_DENIED') ||
-                    errString.includes('API_KEY_INVALID');
+                    errString.includes('API_KEY_INVALID') ||
+                    errString.includes('API_KEY_NOT_FOUND');
 
     if (retries > 0 && !isFatal) {
-      console.warn(`Operation failed, retrying... (${retries} attempts left)`);
+      console.warn(`Operation failed, retrying... (${retries} attempts left). Error: ${errString}`);
       await new Promise(resolve => setTimeout(resolve, delay));
-      return withRetry(operation, retries - 1, delay * 1.5);
+      return withRetry(operation, retries - 1, delay * 2, timeoutMs);
     }
     throw error;
   }
 }
 
+// Helper to clean JSON string from potential markdown backticks
+function cleanJsonString(str: string): string {
+  if (!str) return "{}";
+  // Remove markdown backticks if present
+  let cleaned = str.trim();
+  if (cleaned.startsWith('```json')) {
+    cleaned = cleaned.replace(/^```json\n?/, '').replace(/\n?```$/, '');
+  } else if (cleaned.startsWith('```')) {
+    cleaned = cleaned.replace(/^```\n?/, '').replace(/\n?```$/, '');
+  }
+  return cleaned.trim();
+}
+
+export interface WordValidationResult {
+  isValid: boolean;
+  reason?: string;
+  correctedWord?: string;
+}
+
+export const validateWordInput = async (word: string): Promise<WordValidationResult> => {
+  const apiKey = getApiKey();
+  if (!apiKey) {
+    return { isValid: false, reason: "API key is missing. Please set GEMINI_API_KEY in Settings > Secrets." };
+  }
+  const ai = new GoogleGenAI({ apiKey });
+  return withRetry(async () => {
+    const model = 'gemini-3-flash-preview';
+    const response = await ai.models.generateContent({
+      model,
+      contents: `Validate the word: "${word}"`,
+      config: {
+        systemInstruction: `Validate the following English word input.
+        Rules for valid words:
+        1. Must be a real English word.
+        2. Must have actual meaning and be suitable for learning as thematic vocabulary.
+        3. Allowed parts of speech: Nouns, Verbs, Adjectives.
+        4. Disallowed parts of speech: Adverbs (e.g., quickly, very), Interjections (e.g., wow, oh), Pronouns (e.g., he, she), Prepositions (e.g., in, on), Conjunctions (e.g., and, but), Articles (e.g., a, the), Particles.
+        5. If the user input has minor typos but clearly means a valid word, provide the corrected word.
+        7. If the word is "dolphin", it is a valid noun.`,
+        responseMimeType: "application/json",
+        responseSchema: {
+          type: Type.OBJECT,
+          properties: {
+            isValid: { type: Type.BOOLEAN },
+            reason: { type: Type.STRING },
+            correctedWord: { type: Type.STRING }
+          },
+          required: ["isValid"]
+        }
+      }
+    });
+    
+    const jsonStr = cleanJsonString(response.text || "{}");
+    return JSON.parse(jsonStr) as WordValidationResult;
+  });
+};
+
 export const generateWordData = async (word: string): Promise<WordData> => {
+  const apiKey = getApiKey();
+  if (!apiKey) {
+    throw new Error("API key is missing. Please set GEMINI_API_KEY in Settings > Secrets.");
+  }
+  const ai = new GoogleGenAI({ apiKey });
   return withRetry(async () => {
     const model = 'gemini-3-flash-preview';
     
     const response = await ai.models.generateContent({
       model,
-      contents: `Generate detailed vocabulary data for the English word: "${word}". 
-      Target audience: Elementary school students learning English. 
-      
-      1. "parts": Break the word into **Spelling Chunks** using a **Right-to-Left** analysis strategy.
-         - **Rule 1 (Right-to-Left, Vowel+Consonant)**: Scan from right to left. Group one vowel sound with its leading consonant(s).
-         - **Rule 2 (Silent E)**: 'e' at the end of a word is silent and does NOT count as a vowel. It belongs to the preceding group.
-         - **Rule 3 (Vowel Teams)**: Vowel digraphs (e.g., 'ai', 'ea', 'oa', 'ou') count as ONE vowel sound.
-         - **Rule 4 (Ends)**: Keep suffixes intact where possible (e.g., 'ment', 'tion', 'ing').
-         - **Rule 5 (Single Vowel Sound)**: If a word has only one vowel sound (like 'cake', 'make', 'bike'), do NOT split it. It is a single chunk.
-         - **Specific Override**: For "favourite", use ["fa", "vou", "rite"]. (Right-to-left: 'e' is silent, 'i' is the first vowel -> 'rite'. 'ou' is the next vowel -> 'vou'. 'a' is the next -> 'fa').
-         - **Specific Override**: For "favorite", use ["fa", "vo", "rite"].
-         - **Specific Override**: For "cake", use ["cake"].
-         - **Specific Override**: For "education", use ["e", "du", "ca", "tion"].
-         - **Specific Override**: For "helicopter", use ["he", "li", "cop", "ter"].
-         - **Specific Override**: For "argument", use ["ar", "gu", "ment"].
-         - **Specific Override**: For "bucket", use ["bu", "cket"].
-         - **Specific Override**: For "slime", use ["s", "lime"].
-         - **Specific Override**: For "bait", use ["bait"].
-         - **Specific Override**: For "kitchen", use ["kit", "chen"].
-         - **Specific Override**: For "complementary", use ["com", "ple", "men", "ta", "ry"].
-         - **Goal**: Every part should be a pronounceable chunk, ideally following "One Vowel One Consonant" flow where the consonant leads the next vowel.
-      2. "partsPronunciation": An array of simple English strings mirroring "parts" to help a TTS engine pronounce the syllable correctly in isolation.
-         - **Crucial**: The goal is standard American pronunciation.
-         - **Specific Override**: "ti" in tiger -> "tie". "ger" in tiger -> "gur".
-         - **Specific Override**: "gu" in argument -> "gyou".
-         - **Specific Override**: "bu" in bucket -> "buck". "cket" in bucket -> "it".
-         - **Specific Override**: "s" in slime -> "ss". "lime" in slime -> "lime".
-         - **Specific Override**: "bait" in bait -> "bate".
-         - **Specific Override**: "cake" in cake -> "cake".
-         - **Specific Override**: "kit" in kitchen -> "kit". "chen" in kitchen -> "chin".
-         - **Specific Override**: "com" in complementary -> "kom". "ple" in complementary -> "pluh". "men" in complementary -> "men". "ta" in complementary -> "tuh". "ry" in complementary -> "ree".
-         - **Specific Override**: "vou" in favourite -> "vuh". "rite" in favourite -> "rit".
-         - **Specific Override**: "vo" in favorite -> "vuh". "rite" in favorite -> "rit".
-         - **Specific Override**: "ca" in education -> "kay". "du" in education -> "jew".
-         - Example: "tiger" -> ["tie", "gur"]
-         - Example: "education" -> ["eh", "jew", "kay", "shun"]
-         - Example: "helicopter" -> ["heh", "lih", "cop", "tur"]
-         - Example: "argument" -> ["are", "gyou", "ment"]
-         - Example: "apple" -> ["ap", "pull"]
-      3. "partOfSpeech": The part of speech abbreviation (e.g., "n.", "v.", "adj.", "adv.").
-      4. "root": A very simple etymology or memory aid (e.g. "From Latin 'educare' meaning to lead out").
-      5. "phonetic": **Standard US English IPA** (International Phonetic Alphabet). Ensure it is accurate.
-      6. "translation": Chinese translation.
-      7. "sentence": Simple example sentence.
-      8. "phrases": List 3 short, simple, and common phrases/collocations using this word (max 3-4 words each) to help understand usage (e.g. "red apple", "big apple").
-      9. "relatedWords": List of 3 English words that share similar spelling patterns, roots, or are compound words containing this word (e.g. for 'seven' -> 'seventeen', 'seventy', 'seventh'). If none exist, use rhyming words.`,
+      contents: `Generate data for: "${word}"`,
       config: {
+        systemInstruction: `Generate detailed vocabulary data for English words. 
+        Target audience: Elementary school students learning English. 
+        
+        1. "parts": Break the word into **Spelling Chunks** using a **Right-to-Left** analysis strategy.
+           - **Rule 1 (Right-to-Left, Vowel+Consonant)**: Scan from right to left. Group one vowel sound with its leading consonant(s).
+           - **Rule 2 (Silent E)**: 'e' at the end of a word is silent and does NOT count as a vowel. It belongs to the preceding group.
+           - **Rule 3 (Vowel Teams)**: Vowel digraphs (e.g., 'ai', 'ea', 'oa', 'ou', 'ir', 'er', 'ur') count as ONE vowel sound.
+           - **Rule 4 (Ends)**: Keep suffixes intact where possible (e.g., 'ment', 'tion', 'ing').
+           - **Rule 5 (Single Vowel Sound)**: If a word has only one vowel sound (like 'cake', 'bird', 'shirt', 'make', 'bike'), do NOT split it. It is a single chunk.
+           - **Specific Override**: For "bird", use ["bird"].
+           - **Specific Override**: For "shirt", use ["shirt"].
+           - **Specific Override**: For "favourite", use ["fa", "vou", "rite"].
+           - **Specific Override**: For "favorite", use ["fa", "vo", "rite"].
+           - **Specific Override**: For "cake", use ["cake"].
+           - **Specific Override**: For "education", use ["e", "du", "ca", "tion"].
+           - **Specific Override**: For "helicopter", use ["he", "li", "cop", "ter"].
+           - **Specific Override**: For "argument", use ["ar", "gu", "ment"].
+           - **Specific Override**: For "bucket", use ["bu", "cket"].
+           - **Specific Override**: For "slime", use ["s", "lime"].
+           - **Specific Override**: For "bait", use ["bait"].
+           - **Specific Override**: For "kitchen", use ["kit", "chen"].
+           - **Specific Override**: For "complementary", use ["com", "ple", "men", "ta", "ry"].
+           - **Specific Override**: For "kangaroo", use ["kan", "ga", "roo"].
+           - **Specific Override**: For "penguin", use ["pen", "guin"].
+           - **Specific Override**: For "purple", use ["pur", "ple"].
+           - **Specific Override**: For "turtle", use ["tur", "tle"].
+           - **Specific Override**: For "orange", use ["or", "ange"].
+           - **Specific Override**: For "yellow", use ["yel", "low"].
+           - **Specific Override**: For "dolphin", use ["dol", "phin"].
+           - **Specific Override**: For "frightened", use ["fright", "ened"].
+           - **Goal**: Every part should be a pronounceable chunk, ideally following "One Vowel One Consonant" flow where the consonant leads the next vowel.
+        2. "partsPronunciation": An array of simple English strings mirroring "parts" to help a TTS engine pronounce the syllable correctly in isolation.
+           - **Crucial**: The goal is standard American pronunciation.
+           - **Rule (le ending)**: If a part ends in "le" (like "ple", "tle", "ble"), the pronunciation should end in "ull" or "ull" sound (e.g., "pull", "tull", "bull").
+           - **Specific Override**: "bird" -> "bird".
+           - **Specific Override**: "shirt" -> "shirt".
+           - **Specific Override**: "ti" in tiger -> "tie". "ger" in tiger -> "gur".
+           - **Specific Override**: "gu" in argument -> "gyou".
+           - **Specific Override**: "bu" in bucket -> "buck". "cket" in bucket -> "it".
+           - **Specific Override**: "s" in slime -> "ss". "lime" in slime -> "lime".
+           - **Specific Override**: "bait" in bait -> "bate".
+           - **Specific Override**: "cake" in cake -> "cake".
+           - **Specific Override**: "kit" in kitchen -> "kit". "chen" in kitchen -> "chin".
+           - **Specific Override**: "com" in complementary -> "kom". "ple" in complementary -> "pluh". "men" in complementary -> "men". "ta" in complementary -> "tuh". "ry" in complementary -> "ree".
+           - **Specific Override**: "kan" in kangaroo -> "kang". "ga" in kangaroo -> "guh". "roo" in kangaroo -> "roo".
+           - **Specific Override**: "pen" in penguin -> "pen". "guin" in penguin -> "gwin".
+           - **Specific Override**: "pur" in purple -> "purr". "ple" in purple -> "pull".
+           - **Specific Override**: "tur" in turtle -> "ter". "tle" in turtle -> "tull".
+           - **Specific Override**: "or" in orange -> "or". "ange" in orange -> "inj".
+           - **Specific Override**: "yel" in yellow -> "yel". "low" in yellow -> "loh".
+           - **Specific Override**: "dol" in dolphin -> "dol". "phin" in dolphin -> "fin".
+           - **Specific Override**: "fright" in frightened -> "frite". "ened" in frightened -> "und".
+           - **Specific Override**: "vou" in favourite -> "vuh". "rite" in favourite -> "rit".
+           - **Specific Override**: "vo" in favorite -> "vuh". "rite" in favorite -> "rit".
+           - **Specific Override**: "ca" in education -> "kay". "du" in education -> "jew".
+        3. "partOfSpeech": The part of speech abbreviation (e.g., "n.", "v.", "adj.", "adv.").
+        4. "root": A very simple memory aid or mnemonic for kids. Avoid complex Latin etymology.
+           - **Specific Override**: For "purple", use "purr (like a cat) + ple (sounds like pull)".
+           - **Specific Override**: For "orange", use "or (like the word) + ange (sounds like inj)".
+           - **Specific Override**: For "yellow", use "yel (like bell) + low (like the word)".
+           - **Specific Override**: For "dolphin", use "dol (like doll) + phin (sounds like fin)".
+           - **Specific Override**: For "frightened", use "fright (like light) + ened (sounds like und)".
+        5. "phonetic": **Standard US English IPA**.
+        6. "translation": The Chinese translation of the word.
+        7. "sentence": Simple example sentence.
+        9. "phrases": List 3 short, simple, and common phrases/collocations using this word (max 3-4 words each).
+        10. "relatedWords": List of 3 English words that share similar spelling patterns, roots, or are compound words containing this word.`,
         responseMimeType: "application/json",
         responseSchema: {
           type: Type.OBJECT,
@@ -108,13 +194,22 @@ export const generateWordData = async (word: string): Promise<WordData> => {
     });
 
     const text = response.text;
+    console.log("Gemini Response for", word, ":", text);
     if (!text) throw new Error("No data returned from Gemini");
     
-    return JSON.parse(text) as WordData;
+    const jsonStr = cleanJsonString(text);
+    const data = JSON.parse(jsonStr) as WordData;
+    console.log("Parsed Data for", word, ":", data);
+    return data;
   });
 };
 
 export const generateWordImage = async (word: string): Promise<string> => {
+  const apiKey = getApiKey();
+  if (!apiKey) {
+    throw new Error("API key is missing. Please set GEMINI_API_KEY in Settings > Secrets.");
+  }
+  const ai = new GoogleGenAI({ apiKey });
   try {
     // Explicitly using gemini-2.5-flash-image for image generation
     const model = 'gemini-2.5-flash-image';

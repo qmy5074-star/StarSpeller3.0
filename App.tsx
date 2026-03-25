@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { WordData, DailyStats, GameStep, DBWordRecord, User } from './types';
-import { generateWordData, generateWordImage } from './services/geminiService';
+import { generateWordData, generateWordImage, validateWordInput } from './services/geminiService';
 import { 
   initializeDatabase, 
   initializeUsers,
@@ -19,10 +19,11 @@ import {
   getDailyStats,
   getAllDailyStats,
   findWordInAnyUser,
+  migrateWordDataSchema,
   deleteUserByUsername,
   updateUserPassword
 } from './services/dbService';
-import { decrypt } from './src/utils/encryption';
+import { decrypt, sanitizeJsonString } from './src/utils/encryption';
 import { playWinSound, playDissonance, playHarmony, startRhythmBeat, stopRhythmBeat } from './services/audioService';
 import MicrophoneButton from './components/MicrophoneButton';
 import StatsCard from './components/StatsCard';
@@ -183,6 +184,7 @@ export default function App() {
 
   // Global App State
   const [step, setStep] = useState<GameStep>(GameStep.HOME);
+  const [isInitialized, setIsInitialized] = useState(false);
   
   // User Management State
   const [currentUser, setCurrentUser] = useState<User | null>(null);
@@ -205,7 +207,7 @@ export default function App() {
   const [viewingMonth, setViewingMonth] = useState<Date>(new Date());
   const [practiceDate, setPracticeDate] = useState<string | null>(null);
   const [allDailyStats, setAllDailyStats] = useState<DailyStats[]>([]);
-  const [importPending, setImportPending] = useState<{ file: File, data: any } | null>(null);
+  const [importPending, setImportPending] = useState<{ file: File, data: any, type?: 'words' | 'account' } | null>(null);
 
   // Current Word Session State
   const [wordData, setWordData] = useState<WordData | null>(null);
@@ -243,7 +245,6 @@ export default function App() {
   const [isWrongAnimation, setIsWrongAnimation] = useState(false);
 
   // Rhythm Game State
-  const [showRhythmSuccessModal, setShowRhythmSuccessModal] = useState(false);
   const [isDailyChallenge, setIsDailyChallenge] = useState(false);
   const [challengeDate, setChallengeDate] = useState<string | null>(null);
   const [rhythmPhase, setRhythmPhase] = useState<'WAITING'|'PLAYING'|'WORD_COMPLETE'>('WAITING');
@@ -265,11 +266,31 @@ export default function App() {
   // Initialization: Load User -> Then Load DB for that User
   useEffect(() => {
     const initApp = async () => {
+      try {
         // 1. Initialize Users (this creates the default user if none exists)
         await initializeUsers();
+        
+        // 2. Run data migration for old word records
+        await migrateWordDataSchema();
+
         const usersList = await getAllUsers();
         // Do not auto-login, require explicit login
         setAllUsers(usersList);
+
+        // Auto-login if we have a saved userId
+        const savedUserId = localStorage.getItem('starSpellerUserId');
+        if (savedUserId) {
+            const user = usersList.find(u => u.id === savedUserId);
+            if (user) {
+                setCurrentUser(user);
+                setStep(GameStep.INPUT_WORD);
+            }
+        }
+        setIsInitialized(true);
+      } catch (err) {
+        console.error("Failed to initialize app:", err);
+        setIsInitialized(true);
+      }
     };
     initApp();
 
@@ -325,7 +346,9 @@ export default function App() {
 
   // Effect: When User changes, reload all data
   useEffect(() => {
+      if (!isInitialized) return;
       if (currentUser) {
+          localStorage.setItem('starSpellerUserId', currentUser.id);
           loadUserData(currentUser.id);
           // Reset Game State on user switch
           setStats({
@@ -338,6 +361,8 @@ export default function App() {
             successCount: 0,
             totalTime: 0
           });
+      } else {
+          localStorage.removeItem('starSpellerUserId');
       }
   }, [currentUser]);
 
@@ -399,6 +424,7 @@ export default function App() {
   const [showLoginPassword, setShowLoginPassword] = useState(false);
   const [isManagingUsers, setIsManagingUsers] = useState(false);
   const [showNoWordsModal, setShowNoWordsModal] = useState(false);
+  const [validationError, setValidationError] = useState<string | null>(null);
   const [manageUserPasswords, setManageUserPasswords] = useState<Record<string, string>>({});
 
   const handleCreateUser = async (name: string, password?: string) => {
@@ -506,16 +532,16 @@ export default function App() {
 
   // --- DATA EXPORT / IMPORT ---
 
-  const handleExportData = async () => {
+  const handleExportWords = async () => {
     if (!currentUser) return;
     try {
-        const json = await exportDatabaseToJson(currentUser.id, currentUser.username);
+        const json = await exportDatabaseToJson(currentUser.id, currentUser.username, 'words');
         const blob = new Blob([json], { type: 'application/json' });
         const url = URL.createObjectURL(blob);
         const a = document.createElement('a');
         a.href = url;
-        // Filename matches "单词数据" requirement
-        a.download = `单词数据_${new Date().toISOString().split('T')[0]}_${currentUser.username}.json`;
+        // Filename matches "word_data" requirement
+        a.download = `word_data_${new Date().toISOString().split('T')[0]}_${currentUser.username}.json`;
         document.body.appendChild(a);
         a.click();
         document.body.removeChild(a);
@@ -526,7 +552,7 @@ export default function App() {
     }
   };
 
-  const handleImportData = async (e: React.ChangeEvent<HTMLInputElement>) => {
+  const handleImportWords = async (e: React.ChangeEvent<HTMLInputElement>) => {
       if (!currentUser) return;
       const file = e.target.files?.[0];
       if (!file) return;
@@ -535,10 +561,45 @@ export default function App() {
       reader.onload = async (event) => {
           try {
               const json = event.target?.result as string;
-              // We don't parse here anymore, we pass the raw string to the import function
-              // but we need to check if it's valid JSON if not encrypted.
-              // Actually, the import function handles parsing.
-              setImportPending({ file, data: json });
+              setImportPending({ file, data: json, type: 'words' });
+          } catch (err) {
+              console.error(err);
+              alert("Failed to read import data.");
+          }
+      };
+      reader.readAsText(file);
+      e.target.value = ''; // Reset input
+  };
+
+  const handleExportAccount = async () => {
+    if (!currentUser) return;
+    try {
+        const json = await exportDatabaseToJson(currentUser.id, currentUser.username, 'account');
+        const blob = new Blob([json], { type: 'application/json' });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = `account_data_${new Date().toISOString().split('T')[0]}_${currentUser.username}.json`;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        URL.revokeObjectURL(url);
+    } catch (e) {
+        console.error("Export account failed", e);
+        alert("Account backup failed.");
+    }
+  };
+
+  const handleImportAccount = async (e: React.ChangeEvent<HTMLInputElement>) => {
+      if (!currentUser) return;
+      const file = e.target.files?.[0];
+      if (!file) return;
+
+      const reader = new FileReader();
+      reader.onload = async (event) => {
+          try {
+              const json = event.target?.result as string;
+              setImportPending({ file, data: json, type: 'account' });
           } catch (err) {
               console.error(err);
               alert("Failed to read import data.");
@@ -595,6 +656,22 @@ export default function App() {
 
   // --- HELPER: Pronunciation ---
   const getPartPronunciation = (data: WordData, index: number) => {
+    // Client-side overrides for known problematic pronunciations
+    if (data.word.toLowerCase() === 'kangaroo') {
+      const overrides = ['kang', 'guh', 'roo'];
+      if (index < overrides.length) return overrides[index];
+    }
+    if (data.word.toLowerCase() === 'penguin') {
+      const overrides = ['pen', 'gwin'];
+      if (index < overrides.length) return overrides[index];
+    }
+    if (data.word.toLowerCase() === 'bird') {
+      return 'bird';
+    }
+    if (data.word.toLowerCase() === 'shirt') {
+      return 'shirt';
+    }
+
     if (data.partsPronunciation && data.partsPronunciation[index]) {
       return data.partsPronunciation[index];
     }
@@ -796,8 +873,18 @@ export default function App() {
              }
         }
       } else {
+        // Validate word before generating or searching
+        const validation = await validateWordInput(word);
+        if (!validation.isValid) {
+            setValidationError(validation.reason || "Invalid word.");
+            setIsLoading(false);
+            return;
+        }
+        
+        const wordToProcess = validation.correctedWord || word;
+
         // Check if ANY user has this word first to save tokens
-        const existingInOtherUser = await findWordInAnyUser(word);
+        const existingInOtherUser = await findWordInAnyUser(wordToProcess);
         
         if (existingInOtherUser && existingInOtherUser.data) {
             console.log("Found existing word data from another user, reusing...", existingInOtherUser.data);
@@ -807,7 +894,7 @@ export default function App() {
             // If the reused word has no image, try to generate one now
             if (!img) {
                  try {
-                    img = await generateWordImage(word);
+                    img = await generateWordImage(wordToProcess);
                     data.imageUrl = img;
                 } catch (e) {
                     console.warn("Image gen failed", e);
@@ -816,9 +903,9 @@ export default function App() {
             }
         } else {
             // Generate fresh from AI
-            data = await generateWordData(word);
+            data = await generateWordData(wordToProcess);
             try {
-                img = await generateWordImage(word);
+                img = await generateWordImage(wordToProcess);
             } catch (e) {
                 console.warn("Image gen failed", e);
                 img = `data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='400' height='400' viewBox='0 0 400 400'><rect width='400' height='400' fill='%23e0f2fe'/><text x='50%' y='50%' font-family='sans-serif' font-size='80' fill='%237dd3fc' text-anchor='middle' dominant-baseline='middle'>🖼️</text><text x='50%' y='65%' font-family='sans-serif' font-size='20' fill='%237dd3fc' text-anchor='middle' dominant-baseline='middle'>No Image</text></svg>`;
@@ -854,9 +941,10 @@ export default function App() {
       setShadowingTranscript("");
       speak(data.word);
 
-    } catch (e) {
+    } catch (e: any) {
       console.error(e);
-      alert("Could not load word. Try again.");
+      const errorMessage = e?.message || "Could not load word. Please check your network or API key.";
+      setValidationError(errorMessage);
     } finally {
       setIsLoading(false);
     }
@@ -890,7 +978,7 @@ export default function App() {
           setTodaysWordsCount(todays.length);
       } catch (e) {
           console.error("Failed to regenerate image", e);
-          alert("Could not regenerate image. Please try again.");
+          setValidationError("Could not regenerate image. Please try again.");
       } finally {
           setIsLoading(false);
       }
@@ -923,7 +1011,7 @@ export default function App() {
 
     } catch (err) {
         console.error("Download failed", err);
-        alert("Could not generate image. Please try again.");
+        setValidationError("Could not generate image. Please try again.");
     }
   };
 
@@ -1075,7 +1163,7 @@ export default function App() {
   };
   const handleChoiceSubmit = (opt: string) => {
       if(!wordData) return;
-      if (opt === wordData.parts[practiceTargetIndex]) {
+      if (opt.toLowerCase() === wordData.parts[practiceTargetIndex].toLowerCase()) {
           playWinSound();
           setPracticeSuccess(true);
       } else playDissonance();
@@ -1148,7 +1236,7 @@ export default function App() {
   const handleTestSubmit = async () => {
       if (!wordData || !currentUser) return;
       const result = testSlots.map(s => s?.val).join('');
-      if (result === wordData.word) {
+      if (result.toLowerCase() === wordData.word.toLowerCase()) {
           playWinSound();
           const timeTaken = (Date.now() - startTimeRef.current) / 1000;
           
@@ -1364,11 +1452,7 @@ export default function App() {
 
               currentBPMRef.current += 5;
               speak("Amazing! You earned a Badge!");
-              if (!isDailyChallenge && rhythmQueue.length > 0) {
-                  setShowRhythmSuccessModal(true);
-              } else {
-                  setStep(GameStep.SUCCESS);
-              }
+              setStep(GameStep.SUCCESS);
           }, 1000);
           return;
       }
@@ -1526,8 +1610,8 @@ export default function App() {
               setViewingMonth(new Date());
               setStep(GameStep.HOME);
           }}
-          onImport={handleImportData}
-          onExport={handleExportData}
+          onImport={handleImportWords}
+          onExport={handleExportWords}
           onWordClick={(word, date) => processWordInput(word, date)}
           onDeleteWord={(word) => {
               const lowerWord = word.toLowerCase();
@@ -1575,74 +1659,441 @@ export default function App() {
       <button onClick={handleRestart} className="mt-8 text-gray-400 font-bold">cancel</button>
     </div>
   );
-  const renderObserve = () => { if (!wordData) return null; return ( <div className="flex flex-col items-center gap-6 pb-20">
-  
-    {/* --- HIDDEN FLASHCARD FOR CAPTURE --- */}
-    <div
-      id="downloadable-flashcard"
-      style={{
-        position: 'fixed',
-        top: '-9999px',
-        left: '-9999px',
-        width: '320px', 
-        backgroundColor: 'white',
-        borderRadius: '24px',
-        border: '4px solid #eff6ff',
-        paddingBottom: '20px',
-        display: 'flex',
-        flexDirection: 'column',
-        alignItems: 'center',
-        fontFamily: "'Fredoka', sans-serif"
-      }}
-    >
-       {/* Image Area */}
-       <div style={{ width: '100%', height: '320px', display: 'flex', justifyContent: 'center', alignItems: 'center', backgroundColor: '#f8fafc', overflow: 'hidden', borderBottom: '4px solid #eff6ff' }}>
-          <img src={wordImage} style={{ width: '100%', height: '100%', objectFit: 'contain' }} alt={wordData.word} crossOrigin="anonymous" />
-       </div>
-       {/* Content */}
-       <div style={{ padding: '20px', textAlign: 'center', width: '100%' }}>
-          {/* Syllables with red vowels */}
-          <div style={{ display: 'flex', justifyContent: 'center', gap: '2px', flexWrap: 'wrap', marginBottom: '8px' }}>
-             {wordData.parts.map((p, i) => (
+  const renderObserve = () => {
+    if (!wordData) return null;
+    return (
+      <div className="flex flex-col items-center gap-6 pb-20">
+        {/* --- HIDDEN FLASHCARD FOR CAPTURE --- */}
+        <div
+          id="downloadable-flashcard"
+          style={{
+            position: 'fixed',
+            top: '-9999px',
+            left: '-9999px',
+            width: '320px',
+            backgroundColor: 'white',
+            borderRadius: '24px',
+            border: '4px solid #eff6ff',
+            paddingBottom: '20px',
+            display: 'flex',
+            flexDirection: 'column',
+            alignItems: 'center',
+            fontFamily: "'Fredoka', sans-serif"
+          }}
+        >
+          {/* Image Area */}
+          <div style={{ width: '100%', height: '320px', display: 'flex', justifyContent: 'center', alignItems: 'center', backgroundColor: '#f8fafc', overflow: 'hidden', borderBottom: '4px solid #eff6ff' }}>
+            <img src={wordImage} style={{ width: '100%', height: '100%', objectFit: 'contain' }} alt={wordData.word} crossOrigin="anonymous" />
+          </div>
+          {/* Content */}
+          <div style={{ padding: '20px', textAlign: 'center', width: '100%' }}>
+            {/* Syllables with red vowels */}
+            <div style={{ display: 'flex', justifyContent: 'center', gap: '2px', flexWrap: 'wrap', marginBottom: '8px' }}>
+              {wordData.parts.map((p, i) => (
                 <span key={i} style={{ fontSize: '32px', fontWeight: 700, color: '#2563eb' }}>
-                   {p.split('').map((c, ci) => <span key={ci} style={{ color: isVowel(c) ? '#ef4444' : 'inherit' }}>{c}</span>)}
-                   {i < wordData.parts.length - 1 && <span style={{ color: '#bfdbfe', fontWeight: 400, margin: '0 4px' }}>·</span>}
+                  {p.split('').map((c, ci) => <span key={ci} style={{ color: isVowel(c) ? '#ef4444' : 'inherit' }}>{c}</span>)}
+                  {i < wordData.parts.length - 1 && <span style={{ color: '#bfdbfe', fontWeight: 400, margin: '0 4px' }}>·</span>}
                 </span>
-             ))}
-          </div>
-          {/* Phonetic & Translation */}
-          <div style={{ display: 'flex', justifyContent: 'center', gap: '8px', marginBottom: '8px', alignItems: 'center' }}>
-             <span style={{ background: '#f1f5f9', color: '#64748b', padding: '2px 10px', borderRadius: '12px', fontFamily: 'monospace', fontWeight: 600 }}>{wordData.phonetic}</span>
-             {wordData.partOfSpeech && (
+              ))}
+            </div>
+            {/* Phonetic & Translation */}
+            <div style={{ display: 'flex', justifyContent: 'center', gap: '8px', marginBottom: '8px', alignItems: 'center' }}>
+              <span style={{ background: '#f1f5f9', color: '#64748b', padding: '2px 10px', borderRadius: '12px', fontFamily: 'monospace', fontWeight: 600 }}>{wordData.phonetic}</span>
+              {wordData.partOfSpeech && (
                 <span style={{ fontSize: '14px', color: '#60a5fa', fontWeight: 600 }}>{wordData.partOfSpeech}</span>
-             )}
-             <span style={{ fontSize: '18px', color: '#4b5563', fontWeight: 700 }}>{wordData.translation}</span>
-          </div>
-          {/* Phrases */}
-          {wordData.phrases && wordData.phrases.length > 0 && (
+              )}
+              <span style={{ fontSize: '14px', color: '#94a3b8', fontWeight: 500 }}>{wordData.translation}</span>
+            </div>
+            {/* Phrases */}
+            {wordData.phrases && wordData.phrases.length > 0 && (
               <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6px', justifyContent: 'center', marginBottom: '8px' }}>
                 {wordData.phrases.map((ph, idx) => <span key={idx} style={{ fontSize: '11px', background: '#fce7f3', color: '#db2777', padding: '3px 8px', borderRadius: '8px', fontWeight: 700, border: '1px solid #fbcfe8' }}>{ph}</span>)}
               </div>
-          )}
-          {/* Sentence */}
-          <div style={{ background: '#fefce8', border: '2px dashed #fef08a', borderRadius: '12px', padding: '12px', color: '#854d0e', fontStyle: 'italic', fontSize: '15px' }}>
-             {/* Simple replace for highlight */}
-             {wordData.sentence}
+            )}
+            {/* Sentence */}
+            <div style={{ background: '#fefce8', border: '2px dashed #fef08a', borderRadius: '12px', padding: '12px', color: '#854d0e', fontStyle: 'italic', fontSize: '15px' }}>
+              {wordData.sentence}
+            </div>
+            {/* Root */}
+            <div style={{ fontSize: '11px', color: '#9ca3af', textTransform: 'uppercase', letterSpacing: '1px', fontWeight: 700, marginTop: '8px' }}>
+              {wordData.root}
+            </div>
           </div>
-          {/* Root */}
-          <div style={{ fontSize: '11px', color: '#9ca3af', textTransform: 'uppercase', letterSpacing: '1px', fontWeight: 700, marginTop: '8px' }}>
-             {wordData.root}
-          </div>
-       </div>
-       <div style={{ width: '100%', background: '#eff6ff', color: '#bfdbfe', textAlign: 'center', fontSize: '10px', fontWeight: 700, letterSpacing: '2px', textTransform: 'uppercase', padding: '6px 0' }}>StarSpeller</div>
-    </div>
-    {/* --- END HIDDEN FLASHCARD --- */}
+          <div style={{ width: '100%', background: '#eff6ff', color: '#bfdbfe', textAlign: 'center', fontSize: '10px', fontWeight: 700, letterSpacing: '2px', textTransform: 'uppercase', padding: '6px 0' }}>StarSpeller</div>
+        </div>
 
-  
-  <div className="w-full bg-white rounded-3xl shadow-xl overflow-hidden border-b-8 border-gray-100 relative"><div className="relative aspect-square w-full bg-gray-100 flex items-center justify-center">{wordImage ? (<img src={wordImage} alt={wordData.word} className="w-full h-full object-contain" />) : (<span className="text-4xl">🖼️</span>)}<button onClick={handleSaveFlashcard} className="absolute top-4 left-4 w-10 h-10 bg-white/80 hover:bg-white rounded-full shadow-sm flex items-center justify-center text-gray-500 hover:text-blue-500 transition-all backdrop-blur-sm z-10" title="Download Flashcard"><svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" /></svg></button><button onClick={handleRegenerateImage} className="absolute top-4 left-16 w-10 h-10 bg-white/80 hover:bg-white rounded-full shadow-sm flex items-center justify-center text-gray-500 hover:text-blue-500 transition-all backdrop-blur-sm z-10" title="Regenerate Image" disabled={isLoading}>{isLoading ? <span className="animate-spin">↻</span> : <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" /></svg>}</button><div className="absolute top-4 right-4 z-10"><SpeakerButton onClick={() => speak(wordData.word)} /></div></div><div className="p-8 flex flex-col items-center gap-6"><div className="flex flex-wrap justify-center gap-2">{wordData.parts.map((part, i) => (<button key={i} onClick={() => handlePartClick(part, i)} className={`text-4xl font-black px-3 py-1 rounded-xl transition-all flex gap-0.5 ${activePartHighlight === i ? 'bg-blue-500 text-white scale-110' : 'bg-blue-50 text-blue-500 hover:bg-blue-100'}`}>{part.split('').map((char, charIdx) => (<span key={charIdx} className={isVowel(char) && activePartHighlight !== i ? 'text-red-500' : 'text-inherit'}>{char}</span>))}</button>))}</div><div className="flex gap-4 text-sm font-bold text-gray-400 uppercase tracking-wider"><span>{wordData.phonetic}</span>{wordData.partOfSpeech && (<><span>•</span><span className="text-blue-400 lowercase">{wordData.partOfSpeech}</span></>)}<span>•</span><span>{wordData.translation}</span></div>{wordData.phrases && wordData.phrases.length > 0 && (<div className="flex flex-wrap justify-center gap-2 w-full">{wordData.phrases.map((phrase, i) => (<button key={i} onClick={() => speak(phrase)} className="bg-pink-50 text-pink-500 border border-pink-100 px-3 py-1.5 rounded-lg text-sm font-bold hover:bg-pink-100 transition-colors">{phrase}</button>))}</div>)}<div className="bg-yellow-50 p-4 rounded-xl w-full text-center border border-yellow-100"><p className="text-lg text-gray-700 leading-relaxed"><SentenceHighlighter sentence={wordData.sentence} wordToHighlight={wordData.word} /></p><div className="mt-2 flex justify-center"><button onClick={() => speak(wordData.sentence)} className="text-yellow-600 hover:text-yellow-700"><svg className="w-5 h-5" fill="currentColor" viewBox="0 0 20 20"><path d="M10 18a8 8 0 100-16 8 8 0 000 16zM9.555 7.168A1 1 0 008 8v4a1 1 0 001.555.832l3-2a1 1 0 000-1.664l-3-2z" /></svg></button></div></div><div className="text-center"><span className="text-xs font-black text-blue-300 uppercase tracking-widest">Memory Aid</span><p className="text-gray-600 font-medium mt-1">{wordData.root}</p></div></div></div><div className="flex flex-col items-center gap-4 w-full">{!hasPassedShadowing ? (<><p className="font-bold text-gray-400 uppercase tracking-widest text-xs">Read Aloud to Continue</p><MicrophoneButton isListening={isListening} onStart={handleShadowingStart} onStop={handleVoiceStop} size="lg" label="hold to speak" /><div className="h-8 text-center">{shadowingTranscript && <p className="text-blue-500 font-bold">{shadowingTranscript}</p>}</div>{shadowingAttempts > 2 && (<button onClick={skipShadowing} className="text-gray-400 text-sm font-bold underline">skip for now</button>)}</>) : (<div className="w-full animate-fade-in-up"><GameButton onClick={startStep2} fullWidth color="green" className="text-xl py-4">Start Practice &rarr;</GameButton></div>)}</div></div>); };
-  const renderListen = () => { if (!wordData) return null; const isComplete = currentRootIndex >= wordData.parts.length; return (<div className="flex flex-col items-center justify-center min-h-[60vh] gap-6 w-full"><div className="text-center space-y-2 mb-4"><h2 className="text-2xl font-black text-gray-700">Listen & Spell</h2><p className="text-gray-400 font-medium">{isComplete ? "All done! Tap parts to hear spelling." : "Spell each part letters to unlock."}</p></div><div className="flex flex-wrap justify-center gap-3 mb-4 w-full px-2">{wordData.parts.map((part, index) => { const isDone = index < currentRootIndex; const isCurrent = index === currentRootIndex; return (<button key={index} disabled={!isDone && !isComplete && !isCurrent} onClick={() => {if (isComplete) {speak(part.split('').join(' '));} else { const p = getPartPronunciation(wordData, index); speak(p); }}} className={`relative flex items-center justify-center px-4 py-3 rounded-2xl border-b-4 transition-all duration-300 ${isDone ? 'bg-green-100 border-green-300 text-green-700 scale-100' : isCurrent ? 'bg-white border-blue-400 text-blue-600 scale-110 shadow-lg ring-4 ring-blue-100' : 'bg-gray-100 border-gray-200 text-gray-300 grayscale'}`}>{isDone ? (<div className="flex items-center gap-1 font-black text-xl"><span>{part}</span><svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={3}><path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" /></svg></div>) : isCurrent ? (<div className="flex flex-col items-center"><span className="text-2xl font-black animate-pulse">?</span><span className="text-[10px] uppercase font-bold tracking-widest">Listen</span></div>) : (<span className="text-xl font-bold opacity-50">???</span>)}</button>); })}</div><div className="flex flex-col items-center gap-4 min-h-[160px] justify-center">{isComplete ? (<div className="flex flex-col items-center gap-4 animate-fade-in-up"><p className="text-green-500 font-black text-2xl animate-bounce">Complete!</p><GameButton onClick={() => startStep3()} color="green" className="text-lg shadow-xl">Start Games &rarr;</GameButton></div>) : (<><div className="bg-white p-4 rounded-full shadow-md cursor-pointer hover:bg-gray-50 active:scale-95 transition-all" onClick={() => { const p = getPartPronunciation(wordData, currentRootIndex); speak(p); }}><svg className="w-10 h-10 text-blue-500" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M15.536 8.464a5 5 0 010 7.072m2.828-9.9a9 9 0 010 12.728M5.586 15H4a1 1 0 01-1-1v-4a1 1 0 011-1h1.586l4.707-4.707C10.923 3.663 12 4.109 12 5v14c0 .891-1.077 1.337-1.707.707L5.586 15z" /></svg></div><MicrophoneButton isListening={isListening} onStart={handleListenStart} onStop={handleVoiceStop} label="hold to spell" /></>)}{step2FailCount > 2 && (<div className="animate-fade-in"><button onClick={handleStep2Skip} className="bg-gray-200 text-gray-600 px-4 py-2 rounded-lg font-bold hover:bg-gray-300 transition-colors shadow-sm">I said it! (Skip)</button></div>)}{step2Error && (<div className="bg-red-50 text-red-500 px-4 py-2 rounded-lg font-bold animate-shake text-center">{step2Error}</div>)}</div></div>); };
-  const renderPractice = () => { if (!wordData) return null; if (practiceSuccess) { return (<div className="flex flex-col items-center justify-center min-h-[60vh] gap-8 p-4 animate-fade-in-up"><div className="text-center"><h2 className="text-4xl font-black text-green-500 mb-2">Awesome!</h2><p className="text-gray-400 font-medium">Click parts to hear pronunciation</p></div><div className="flex flex-wrap justify-center gap-2">{wordData.parts.map((part, i) => (<button key={i} onClick={() => speak(getPartPronunciation(wordData, i))} className="text-4xl font-black text-blue-600 bg-white px-4 py-2 rounded-xl shadow-md border-b-4 border-blue-200 hover:scale-105 active:scale-95 transition-all">{part}</button>))}</div><GameButton onClick={handleNextPracticePhase} color="green" className="text-xl py-4 shadow-xl mt-8">Next Challenge &rarr;</GameButton></div>); } return (<div className="flex flex-col items-center justify-center min-h-[60vh] gap-8 p-4"><h2 className="text-2xl font-black text-gray-700 mb-4 text-center">{practicePhase === 'CHOICE' && "Find the Missing Part"}{practicePhase === 'FILL' && "Type the Missing Part"}{practicePhase === 'ORDER' && "Construct the Word"}</h2><div className="flex flex-wrap justify-center gap-2 mb-8 min-h-[80px]">{practicePhase === 'ORDER' ? (<div className="flex items-center gap-1 bg-gray-200/50 p-3 rounded-2xl min-w-[200px] justify-center border-2 border-gray-200 border-dashed">{orderedParts.length === 0 && <span className="text-gray-400 font-bold opacity-50">tap blocks below</span>}{orderedParts.map((p, i) => (<span key={i} className="text-3xl font-black text-white bg-blue-400 px-3 py-1 rounded-lg border-b-4 border-blue-600 shadow-sm animate-fade-in-up">{p}</span>))}</div>) : wordData.parts.map((part, i) => { const isTarget = i === practiceTargetIndex; if (isTarget) return <span key={i} className="w-20 h-14 bg-gray-100 rounded-lg border-4 border-dashed border-gray-300 animate-pulse"></span>; return <span key={i} className="text-3xl font-black text-gray-400 opacity-50">{part}</span>; })}</div>{practicePhase === 'CHOICE' && (<div className="grid grid-cols-2 gap-4 w-full max-w-sm">{practiceOptions.map((opt, i) => (<GameButton key={i} onClick={() => handleChoiceSubmit(opt)} color="yellow" className="text-xl py-6">{opt}</GameButton>))}</div>)}{practicePhase === 'FILL' && (<div className="flex flex-col gap-4 w-full max-w-xs"><input type="text" value={practiceInput} onChange={(e) => setPracticeInput(e.target.value)} className="w-full text-center text-3xl font-bold py-4 rounded-2xl border-4 border-blue-200 focus:border-blue-500 outline-none shadow-sm text-gray-700 placeholder-gray-300" placeholder="..." autoFocus /><GameButton onClick={handleFillSubmit} color="green" fullWidth>Check</GameButton></div>)}{practicePhase === 'ORDER' && (<div className="flex flex-wrap justify-center gap-3 w-full max-w-sm">{jumbledParts.map((part, i) => { const isUsed = usedJumbledIndices.includes(i); if (isUsed) return <div key={i} className="w-24 h-12 bg-gray-100 rounded-xl opacity-20 border-2 border-gray-200"></div>; return (<GameButton key={i} onClick={() => handleOrderClick(part, i)} color="purple" className="animate-fade-in">{part}</GameButton>); })}</div>)}</div>); };
-  const renderTest = () => { if (!wordData) return null; const isCheckDisabled = testSlots.some(slot => slot === null); return (<div className="flex flex-col items-center justify-between min-h-[calc(100vh-10rem)] p-2 max-w-md mx-auto"><div className="w-full flex flex-col items-center gap-3 mt-2"><div className="text-center"><h2 className="text-2xl font-black text-gray-700 mb-1">Final Check</h2><p className="text-sm text-gray-400">Assemble the word!</p></div><div className="w-40 h-40 sm:w-48 sm:h-48 rounded-2xl overflow-hidden shadow-lg border-2 border-white">{wordImage && <img src={wordImage} alt="clue" className="w-full h-full object-contain" />}</div><div className={`flex flex-wrap justify-center gap-1.5 min-h-[70px] w-full p-3 rounded-3xl transition-colors ${isWrongAnimation ? 'bg-red-50 animate-shake' : 'bg-blue-50/50'}`}>{testSlots.map((slot, index) => (<button key={index} onClick={() => handleSlotTileClick(slot, index)} className={`min-w-[50px] h-14 rounded-xl border-b-4 flex items-center justify-center text-2xl font-black transition-all duration-200 ${slot ? 'bg-white border-blue-200 text-blue-600 shadow-sm active:translate-y-1 active:border-b-0 hover:-translate-y-1' : 'bg-gray-200/50 border-gray-300/50 border-dashed border-2 shadow-inner text-transparent'}`}>{slot ? slot.val : '_'}</button>))}</div></div><div className="w-full flex flex-col gap-4 mb-2 mt-2"><div className="flex flex-wrap justify-center gap-2 min-h-[80px]">{testBank.map((tile) => (<button key={tile.id} onClick={() => handleBankTileClick(tile)} className="bg-white text-gray-700 font-bold text-xl px-4 py-2 rounded-2xl shadow-[0_4px_0_#e5e7eb] border-2 border-gray-100 active:shadow-none active:translate-y-[4px] transition-all hover:-translate-y-1 hover:border-blue-200">{tile.val}</button>))}</div><GameButton onClick={handleTestSubmit} color={isCheckDisabled ? 'white' : 'green'} disabled={isCheckDisabled} fullWidth className="text-xl py-3 shadow-lg transition-all">{isCheckDisabled ? 'Fill all slots...' : 'Check Answer ✨'}</GameButton></div></div>); };
+        {/* --- ACTUAL UI --- */}
+        <div className="w-full bg-white rounded-3xl shadow-xl overflow-hidden border-b-8 border-gray-100 relative">
+          <div className="relative aspect-square w-full bg-gray-100 flex items-center justify-center">
+            {wordImage ? (
+              <img src={wordImage} alt={wordData.word} className="w-full h-full object-contain" />
+            ) : (
+              <span className="text-4xl">🖼️</span>
+            )}
+            <button
+              onClick={handleSaveFlashcard}
+              className="absolute top-4 left-4 w-10 h-10 bg-white/80 hover:bg-white rounded-full shadow-sm flex items-center justify-center text-gray-500 hover:text-blue-500 transition-all backdrop-blur-sm z-10"
+              title="Download Flashcard"
+            >
+              <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" />
+              </svg>
+            </button>
+            <button
+              onClick={handleRegenerateImage}
+              className="absolute top-4 left-16 w-10 h-10 bg-white/80 hover:bg-white rounded-full shadow-sm flex items-center justify-center text-gray-500 hover:text-blue-500 transition-all backdrop-blur-sm z-10"
+              title="Regenerate Image"
+              disabled={isLoading}
+            >
+              {isLoading ? (
+                <span className="animate-spin">↻</span>
+              ) : (
+                <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+                </svg>
+              )}
+            </button>
+            <div className="absolute top-4 right-4 z-10">
+              <SpeakerButton onClick={() => speak(wordData.word)} />
+            </div>
+          </div>
+
+          <div className="p-8 flex flex-col items-center gap-6">
+            <div className="flex flex-wrap justify-center gap-2">
+              {wordData.parts.map((part, i) => (
+                <button
+                  key={i}
+                  onClick={() => handlePartClick(part, i)}
+                  className={`text-4xl font-black px-3 py-1 rounded-xl transition-all flex gap-0.5 ${activePartHighlight === i ? 'bg-blue-500 text-white scale-110' : 'bg-blue-50 text-blue-500 hover:bg-blue-100'}`}
+                >
+                  {part.split('').map((char, charIdx) => (
+                    <span key={charIdx} className={isVowel(char) && activePartHighlight !== i ? 'text-red-500' : 'text-inherit'}>
+                      {char}
+                    </span>
+                  ))}
+                </button>
+              ))}
+            </div>
+
+            <div className="flex flex-col items-center gap-1">
+              <div className="flex gap-4 text-sm font-bold text-gray-400 uppercase tracking-wider items-center">
+                <span>{wordData.phonetic}</span>
+                {wordData.partOfSpeech && (
+                  <>
+                    <span>•</span>
+                    <span className="text-blue-400 lowercase">{wordData.partOfSpeech}</span>
+                  </>
+                )}
+                {wordData.translation && (
+                  <span className="text-gray-300 text-xs normal-case font-medium">{wordData.translation}</span>
+                )}
+              </div>
+            </div>
+
+            {wordData.phrases && wordData.phrases.length > 0 && (
+              <div className="flex flex-wrap justify-center gap-2 w-full">
+                {wordData.phrases.map((phrase, i) => (
+                  <button
+                    key={i}
+                    onClick={() => speak(phrase)}
+                    className="bg-pink-50 text-pink-500 border border-pink-100 px-3 py-1.5 rounded-lg text-sm font-bold hover:bg-pink-100 transition-colors"
+                  >
+                    {phrase}
+                  </button>
+                ))}
+              </div>
+            )}
+
+            <div className="bg-yellow-50 p-4 rounded-xl w-full text-center border border-yellow-100">
+              <p className="text-lg text-gray-700 leading-relaxed">
+                <SentenceHighlighter sentence={wordData.sentence} wordToHighlight={wordData.word} />
+              </p>
+              <div className="mt-2 flex justify-center">
+                <button onClick={() => speak(wordData.sentence)} className="text-yellow-600 hover:text-yellow-700">
+                  <svg className="w-5 h-5" fill="currentColor" viewBox="0 0 20 20">
+                    <path d="M10 18a8 8 0 100-16 8 8 0 000 16zM9.555 7.168A1 1 0 008 8v4a1 1 0 001.555.832l3-2a1 1 0 000-1.664l-3-2z" />
+                  </svg>
+                </button>
+              </div>
+            </div>
+
+            <div className="text-center group cursor-pointer" onClick={() => speak(wordData.root)}>
+              <div className="flex items-center justify-center gap-1">
+                <span className="text-xs font-black text-blue-300 uppercase tracking-widest">Memory Aid</span>
+                <svg className="w-3 h-3 text-blue-300 opacity-0 group-hover:opacity-100 transition-opacity" fill="currentColor" viewBox="0 0 20 20">
+                  <path d="M10 18a8 8 0 100-16 8 8 0 000 16zM9.555 7.168A1 1 0 008 8v4a1 1 0 001.555.832l3-2a1 1 0 000-1.664l-3-2z" />
+                </svg>
+              </div>
+              <p className="text-gray-600 font-medium mt-1 group-hover:text-blue-500 transition-colors">{wordData.root}</p>
+            </div>
+          </div>
+        </div>
+
+        <div className="flex flex-col items-center gap-4 w-full">
+          {!hasPassedShadowing ? (
+            <>
+              <p className="font-bold text-gray-400 uppercase tracking-widest text-xs">Read Aloud to Continue</p>
+              <MicrophoneButton isListening={isListening} onStart={handleShadowingStart} onStop={handleVoiceStop} size="lg" label="hold to speak" />
+              <div className="h-8 text-center">
+                {shadowingTranscript && <p className="text-blue-500 font-bold">{shadowingTranscript}</p>}
+              </div>
+              {shadowingAttempts > 2 && (
+                <button onClick={skipShadowing} className="text-gray-400 text-sm font-bold underline">skip for now</button>
+              )}
+            </>
+          ) : (
+            <div className="w-full animate-fade-in-up">
+              <GameButton onClick={startStep2} fullWidth color="green" className="text-xl py-4">Start Practice &rarr;</GameButton>
+            </div>
+          )}
+        </div>
+      </div>
+    );
+  };
+
+  const renderListen = () => {
+    if (!wordData) return null;
+    const isComplete = currentRootIndex >= wordData.parts.length;
+    return (
+      <div className="flex flex-col items-center justify-center min-h-[60vh] gap-6 w-full">
+        <div className="text-center space-y-2 mb-4">
+          <h2 className="text-2xl font-black text-gray-700">Listen & Spell</h2>
+          <p className="text-gray-400 font-medium">
+            {isComplete ? "All done! Tap parts to hear spelling." : "Spell each part letters to unlock."}
+          </p>
+        </div>
+
+        <div className="flex flex-wrap justify-center gap-3 mb-4 w-full px-2">
+          {wordData.parts.map((part, index) => {
+            const isDone = index < currentRootIndex;
+            const isCurrent = index === currentRootIndex;
+            return (
+              <button
+                key={index}
+                disabled={!isDone && !isComplete && !isCurrent}
+                onClick={() => {
+                  if (isComplete) {
+                    speak(part.split('').join(' '));
+                  } else {
+                    const p = getPartPronunciation(wordData, index);
+                    speak(p);
+                  }
+                }}
+                className={`relative flex items-center justify-center px-4 py-3 rounded-2xl border-b-4 transition-all duration-300 ${
+                  isDone
+                    ? 'bg-green-100 border-green-300 text-green-700 scale-100'
+                    : isCurrent
+                    ? 'bg-white border-blue-400 text-blue-600 scale-110 shadow-lg ring-4 ring-blue-100'
+                    : 'bg-gray-100 border-gray-200 text-gray-300 grayscale'
+                }`}
+              >
+                {isDone ? (
+                  <div className="flex items-center gap-1 font-black text-xl">
+                    <span>{part}</span>
+                    <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={3}>
+                      <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
+                    </svg>
+                  </div>
+                ) : isCurrent ? (
+                  <div className="flex flex-col items-center">
+                    <span className="text-2xl font-black animate-pulse">?</span>
+                    <span className="text-[10px] uppercase font-bold tracking-widest">Listen</span>
+                  </div>
+                ) : (
+                  <span className="text-xl font-bold opacity-50">???</span>
+                )}
+              </button>
+            );
+          })}
+        </div>
+
+        <div className="flex flex-col items-center gap-4 min-h-[160px] justify-center">
+          {isComplete ? (
+            <div className="flex flex-col items-center gap-4 animate-fade-in-up">
+              <p className="text-green-500 font-black text-2xl animate-bounce">Complete!</p>
+              <GameButton onClick={() => startStep3()} color="green" className="text-lg shadow-xl">
+                Start Games &rarr;
+              </GameButton>
+            </div>
+          ) : (
+            <>
+              <div
+                className="bg-white p-4 rounded-full shadow-md cursor-pointer hover:bg-gray-50 active:scale-95 transition-all"
+                onClick={() => {
+                  const p = getPartPronunciation(wordData, currentRootIndex);
+                  speak(p);
+                }}
+              >
+                <svg className="w-10 h-10 text-blue-500" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M15.536 8.464a5 5 0 010 7.072m2.828-9.9a9 9 0 010 12.728M5.586 15H4a1 1 0 01-1-1v-4a1 1 0 011-1h1.586l4.707-4.707C10.923 3.663 12 4.109 12 5v14c0 .891-1.077 1.337-1.707.707L5.586 15z" />
+                </svg>
+              </div>
+              <MicrophoneButton isListening={isListening} onStart={handleListenStart} onStop={handleVoiceStop} label="hold to spell" />
+            </>
+          )}
+          {step2FailCount > 2 && (
+            <div className="animate-fade-in">
+              <button onClick={handleStep2Skip} className="bg-gray-200 text-gray-600 px-4 py-2 rounded-lg font-bold hover:bg-gray-300 transition-colors shadow-sm">
+                I said it! (Skip)
+              </button>
+            </div>
+          )}
+          {step2Error && (
+            <div className="bg-red-50 text-red-500 px-4 py-2 rounded-lg font-bold animate-shake text-center">
+              {step2Error}
+            </div>
+          )}
+        </div>
+      </div>
+    );
+  };
+
+  const renderPractice = () => {
+    if (!wordData) return null;
+    if (practiceSuccess) {
+      return (
+        <div className="flex flex-col items-center justify-center min-h-[60vh] gap-8 p-4 animate-fade-in-up">
+          <div className="text-center">
+            <h2 className="text-4xl font-black text-green-500 mb-2">Awesome!</h2>
+            <p className="text-gray-400 font-medium">Click parts to hear pronunciation</p>
+          </div>
+          <div className="flex flex-wrap justify-center gap-2">
+            {wordData.parts.map((part, i) => (
+              <button
+                key={i}
+                onClick={() => speak(getPartPronunciation(wordData, i))}
+                className="text-4xl font-black text-blue-600 bg-white px-4 py-2 rounded-xl shadow-md border-b-4 border-blue-200 hover:scale-105 active:scale-95 transition-all"
+              >
+                {part}
+              </button>
+            ))}
+          </div>
+          <GameButton onClick={handleNextPracticePhase} color="green" className="text-xl py-4 shadow-xl mt-8">
+            Next Challenge &rarr;
+          </GameButton>
+        </div>
+      );
+    }
+    return (
+      <div className="flex flex-col items-center justify-center min-h-[60vh] gap-8 p-4">
+        <div className="text-center mb-4">
+          <h2 className="text-2xl font-black text-gray-700">
+            {practicePhase === 'CHOICE' && "Find the Missing Part"}
+            {practicePhase === 'FILL' && "Type the Missing Part"}
+            {practicePhase === 'ORDER' && "Construct the Word"}
+          </h2>
+        </div>
+
+        <div className="flex flex-wrap justify-center gap-2 mb-8 min-h-[80px]">
+          {practicePhase === 'ORDER' ? (
+            <div className="flex items-center gap-1 bg-gray-200/50 p-3 rounded-2xl min-w-[200px] justify-center border-2 border-gray-200 border-dashed">
+              {orderedParts.length === 0 && <span className="text-gray-400 font-bold opacity-50">tap blocks below</span>}
+              {orderedParts.map((p, i) => (
+                <span key={i} className="text-3xl font-black text-white bg-blue-400 px-3 py-1 rounded-lg border-b-4 border-blue-600 shadow-sm animate-fade-in-up">
+                  {p}
+                </span>
+              ))}
+            </div>
+          ) : (
+            wordData.parts.map((part, i) => {
+              const isTarget = i === practiceTargetIndex;
+              if (isTarget) return <span key={i} className="w-20 h-14 bg-gray-100 rounded-lg border-4 border-dashed border-gray-300 animate-pulse"></span>;
+              return <span key={i} className="text-3xl font-black text-gray-400 opacity-50">{part}</span>;
+            })
+          )}
+        </div>
+
+        {practicePhase === 'CHOICE' && (
+          <div className="grid grid-cols-2 gap-4 w-full max-w-sm">
+            {practiceOptions.map((opt, i) => (
+              <GameButton key={i} onClick={() => handleChoiceSubmit(opt)} color="yellow" className="text-xl py-6">
+                {opt}
+              </GameButton>
+            ))}
+          </div>
+        )}
+
+        {practicePhase === 'FILL' && (
+          <div className="flex flex-col gap-4 w-full max-w-xs">
+            <input
+              type="text"
+              value={practiceInput}
+              onChange={(e) => setPracticeInput(e.target.value)}
+              className="w-full text-center text-3xl font-bold py-4 rounded-2xl border-4 border-blue-200 focus:border-blue-500 outline-none shadow-sm text-gray-700 placeholder-gray-300"
+              placeholder="..."
+              autoFocus
+            />
+            <GameButton onClick={handleFillSubmit} color="green" fullWidth>
+              Check
+            </GameButton>
+          </div>
+        )}
+
+        {practicePhase === 'ORDER' && (
+          <div className="flex flex-wrap justify-center gap-3 w-full max-w-sm">
+            {jumbledParts.map((part, i) => {
+              const isUsed = usedJumbledIndices.includes(i);
+              if (isUsed) return <div key={i} className="w-24 h-12 bg-gray-100 rounded-xl opacity-20 border-2 border-gray-200"></div>;
+              return (
+                <GameButton key={i} onClick={() => handleOrderClick(part, i)} color="purple" className="animate-fade-in">
+                  {part}
+                </GameButton>
+              );
+            })}
+          </div>
+        )}
+      </div>
+    );
+  };
+
+  const renderTest = () => {
+    if (!wordData) return null;
+    const isCheckDisabled = testSlots.some(slot => slot === null);
+    return (
+      <div className="flex flex-col items-center justify-between min-h-[calc(100vh-10rem)] p-2 max-w-md mx-auto">
+        <div className="w-full flex flex-col items-center gap-3 mt-2">
+          <div className="text-center">
+            <h2 className="text-2xl font-black text-gray-700 mb-1">Final Check</h2>
+            <p className="text-sm text-gray-400">Assemble the word!</p>
+          </div>
+          <div className="w-40 h-40 sm:w-48 sm:h-48 rounded-2xl overflow-hidden shadow-lg border-2 border-white">
+            {wordImage && <img src={wordImage} alt="clue" className="w-full h-full object-contain" />}
+          </div>
+          <div className={`flex flex-wrap justify-center gap-1.5 min-h-[70px] w-full p-3 rounded-3xl transition-colors ${isWrongAnimation ? 'bg-red-50 animate-shake' : 'bg-blue-50/50'}`}>
+            {testSlots.map((slot, index) => (
+              <button
+                key={index}
+                onClick={() => handleSlotTileClick(slot, index)}
+                className={`min-w-[50px] h-14 rounded-xl border-b-4 flex items-center justify-center text-2xl font-black transition-all duration-200 ${
+                  slot ? 'bg-white border-blue-200 text-blue-600 shadow-sm active:translate-y-1 active:border-b-0 hover:-translate-y-1' : 'bg-gray-200/50 border-gray-300/50 border-dashed border-2 shadow-inner text-transparent'
+                }`}
+              >
+                {slot ? slot.val : '_'}
+              </button>
+            ))}
+          </div>
+        </div>
+
+        <div className="w-full flex flex-col gap-4 mb-2 mt-2">
+          <div className="flex flex-wrap justify-center gap-2 min-h-[80px]">
+            {testBank.map((tile) => (
+              <button
+                key={tile.id}
+                onClick={() => handleBankTileClick(tile)}
+                className="bg-white text-gray-700 font-bold text-xl px-4 py-2 rounded-2xl shadow-[0_4px_0_#e5e7eb] border-2 border-gray-100 active:shadow-none active:translate-y-[4px] transition-all hover:-translate-y-1 hover:border-blue-200"
+              >
+                {tile.val}
+              </button>
+            ))}
+          </div>
+          <GameButton onClick={handleTestSubmit} color={isCheckDisabled ? 'white' : 'green'} disabled={isCheckDisabled} fullWidth className="text-xl py-3 shadow-lg transition-all">
+            {isCheckDisabled ? 'Fill all slots...' : 'Check Answer ✨'}
+          </GameButton>
+        </div>
+      </div>
+    );
+  };
+
   const renderRhythmIntro = () => {
       const targetDate = challengeDate || new Date().toDateString();
       const isToday = targetDate === new Date().toDateString();
@@ -1717,23 +2168,74 @@ export default function App() {
           </div>
       );
   };
-  const renderSuccess = () => (
-    <div className="flex flex-col items-center justify-center min-h-[calc(100vh-14rem)] gap-8 p-6 text-center animate-fade-in-up">
-        <h1 className="text-6xl animate-bounce">🎉</h1>
-        <h2 className="text-4xl font-black text-green-500">Amazing Job!</h2>
-        <p className="text-gray-400 font-bold">You mastered {wordData?.word || "it"}!</p>
-        <div className="flex flex-col gap-4 w-full max-w-xs">
-            <GameButton onClick={handleRestart} color="blue" fullWidth>Learn New Word</GameButton>
-            <GameButton 
-                onClick={() => handleStartChallenge(rhythmQueue, isDailyChallenge ? currentBPMRef.current : 80, practiceDate || new Date().toDateString())} 
-                color="purple" 
-                fullWidth
-            >
-                Daily Challenge (Start at {isDailyChallenge ? currentBPMRef.current : 80} BPM)
-            </GameButton>
+  const renderSuccess = () => {
+    const isRhythm = rhythmQueue.length > 0;
+    
+    if (isRhythm) {
+      return (
+        <div className="flex flex-col items-center justify-center min-h-[calc(100vh-14rem)] gap-8 p-6 text-center animate-fade-in-up">
+            <h1 className="text-6xl animate-bounce">🏆</h1>
+            <h2 className="text-4xl font-black text-transparent bg-clip-text bg-gradient-to-r from-pink-500 to-violet-500">
+              Challenge Level Up!
+            </h2>
+            <div className="bg-white p-8 rounded-[2.5rem] shadow-xl border-4 border-violet-100 w-full max-w-sm space-y-4">
+                <p className="text-slate-400 font-black uppercase tracking-widest text-xs">Rhythm Mastery</p>
+                <div className="text-6xl font-black text-violet-600">{currentBPMRef.current} <span className="text-2xl">BPM</span></div>
+                <div className="h-1 w-12 bg-violet-200 mx-auto rounded-full"></div>
+                <p className="text-slate-500 font-bold">
+                  You're getting faster! Ready for the next speed?
+                </p>
+            </div>
+            <div className="flex flex-col gap-4 w-full max-w-xs">
+                <GameButton 
+                  onClick={() => startRhythmCommon()} 
+                  color="purple" 
+                  fullWidth
+                  className="text-xl py-4"
+                >
+                  Next Level 🚀
+                </GameButton>
+                
+                <button 
+                  onClick={handleRestart}
+                  className="text-slate-400 font-bold hover:text-slate-600 transition-colors underline decoration-2 underline-offset-4"
+                >
+                  Back to Home
+                </button>
+            </div>
         </div>
-    </div>
-  );
+      );
+    }
+
+    return (
+      <div className="flex flex-col items-center justify-center min-h-[calc(100vh-14rem)] gap-8 p-6 text-center animate-fade-in-up">
+          <h1 className="text-6xl animate-bounce">🎉</h1>
+          <h2 className="text-4xl font-black text-green-500">Amazing Job!</h2>
+          <div className="bg-white p-6 rounded-2xl shadow-lg border-2 border-green-100 w-full max-w-sm">
+              <h3 className="text-3xl font-black text-blue-600 mb-1">{wordData?.word}</h3>
+              <div className="flex justify-center items-center gap-2 mb-2">
+                  {wordData?.partOfSpeech && (
+                      <span className="text-blue-400 text-xs font-bold lowercase">{wordData.partOfSpeech}</span>
+                  )}
+                  {wordData?.translation && (
+                      <span className="text-gray-400 text-xs font-medium">{wordData.translation}</span>
+                  )}
+              </div>
+          </div>
+          <p className="text-gray-400 font-bold">You mastered it!</p>
+          <div className="flex flex-col gap-4 w-full max-w-xs">
+              <GameButton onClick={handleRestart} color="blue" fullWidth>Learn New Word</GameButton>
+              <GameButton 
+                  onClick={() => handleStartChallenge(rhythmQueue, isDailyChallenge ? currentBPMRef.current : 80, practiceDate || new Date().toDateString())} 
+                  color="purple" 
+                  fullWidth
+              >
+                  Daily Challenge (Start at {isDailyChallenge ? currentBPMRef.current : 80} BPM)
+              </GameButton>
+          </div>
+      </div>
+    );
+  };
   const renderFail = () => {
     const isRhythm = isDailyChallenge || rhythmQueue.length > 0;
     return (
@@ -1860,6 +2362,8 @@ export default function App() {
         onSwitchUser={handleSwitchUser}
         onCreateUser={handleCreateUser}
         onManageUsers={() => setIsManagingUsers(true)}
+        onExportAccount={handleExportAccount}
+        onImportAccount={handleImportAccount}
       />
       <main className={`container mx-auto max-w-3xl px-4 ${step === GameStep.HOME ? 'pt-16 md:pt-20' : 'pt-24 md:pt-28'}`}>
         {step === GameStep.HOME && renderHome()}
@@ -1880,23 +2384,29 @@ export default function App() {
       {importPending && (
         <div className="fixed inset-0 bg-black/50 flex items-center justify-center p-4 z-50">
           <div className="bg-white rounded-2xl p-6 max-w-sm w-full shadow-2xl">
-            <h3 className="text-xl font-bold mb-4 text-gray-800">Confirm Import</h3>
+            <h3 className="text-xl font-bold mb-4 text-gray-800">
+                {importPending.type === 'account' ? 'Confirm Account Import' : 'Confirm Words Import'}
+            </h3>
             
             {(() => {
               let username = 'Unknown';
               let dateStr = 'Unknown';
+              let isAccountExport = false;
+              let isWordsExport = false;
               try {
                 let rawData = importPending.data.replace(/^\uFEFF/, '').trim();
                 let data;
                 if (rawData.startsWith('{')) {
-                    const sanitized = rawData.replace(/[\x00-\x09\x0B\x0C\x0E-\x1F]/g, ' ');
+                    const sanitized = sanitizeJsonString(rawData);
                     data = JSON.parse(sanitized);
                 } else {
                     const decrypted = decrypt(rawData);
-                    const sanitized = decrypted.replace(/[\x00-\x09\x0B\x0C\x0E-\x1F]/g, ' ');
+                    const sanitized = sanitizeJsonString(decrypted);
                     data = JSON.parse(sanitized);
                 }
-                username = data?.users?.[0]?.username || 'Unknown';
+                username = data?.username || data?.users?.[0]?.username || data?.exportUsername || (data?.words ? 'Words Backup' : 'Unknown');
+                isAccountExport = data?.exportType === 'account';
+                isWordsExport = data?.exportType === 'words' || !data?.exportType;
                 if (data?.exportDate) {
                   dateStr = new Date(data.exportDate).toLocaleDateString();
                 } else {
@@ -1920,6 +2430,15 @@ export default function App() {
                     <span className="text-gray-500">Date</span>
                     <span className="font-bold text-gray-800">{dateStr}</span>
                   </div>
+                  <div className="flex justify-between items-center border-b pb-2">
+                    <span className="text-gray-500">Contents</span>
+                    <span className="font-bold text-gray-800">
+                        {isAccountExport ? 'Account & Stats' : 'Words'}
+                    </span>
+                  </div>
+                  <div className="mt-4 p-3 bg-yellow-50 text-yellow-800 rounded-lg text-sm">
+                    ⚠️ Warning: This will overwrite your current {importPending.type === 'account' ? 'account stats' : 'words'}. This action cannot be undone.
+                  </div>
                 </div>
               );
             })()}
@@ -1934,72 +2453,22 @@ export default function App() {
               <button 
                 onClick={async () => {
                   try {
-                    const count = await importDatabaseFromJson(currentUser!.id, currentUser!.username, importPending.data, true);
+                    const count = await importDatabaseFromJson(currentUser!.id, currentUser!.username, importPending.data, true, importPending.type || 'words');
                     setImportPending(null);
-                    alert(`Successfully imported ${count} records!`);
+                    alert(`Successfully imported ${importPending.type === 'account' ? 'account data' : count + ' words'}!`);
                     // Reload current user data
                     const users = await getAllUsers();
                     setAllUsers(users);
                     loadUserData(currentUser!.id);
                     setDataVersion(prev => prev + 1);
-                  } catch (err) {
+                  } catch (err: any) {
                     console.error("Import failed", err);
-                    alert("Failed to import data.");
+                    alert(err?.message || err || "Failed to import data.");
                   }
                 }}
                 className="px-4 py-2 bg-blue-500 text-white font-bold rounded-lg hover:bg-blue-600 transition-colors shadow-md"
               >
                 Import
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {showRhythmSuccessModal && (
-        <div className="fixed inset-0 bg-slate-950/90 backdrop-blur-md flex items-center justify-center p-6 z-[60] animate-fade-in">
-          <div className="bg-slate-900 border-4 border-slate-800 rounded-[3rem] p-8 max-w-sm w-full shadow-2xl text-center space-y-8 animate-scale-in">
-            <div className="space-y-4">
-              <div className="text-7xl animate-bounce">🏆</div>
-              <h2 className="text-4xl font-black text-transparent bg-clip-text bg-gradient-to-r from-pink-500 to-violet-500">
-                Level Up!
-              </h2>
-              <p className="text-slate-300 font-bold text-lg">
-                Amazing! Rhythm increased to <span className="text-violet-400">{currentBPMRef.current} BPM</span>.
-              </p>
-            </div>
-            
-            <div className="flex flex-col gap-4">
-              <GameButton 
-                onClick={() => {
-                  setShowRhythmSuccessModal(false);
-                  startRhythmCommon();
-                }} 
-                color="purple" 
-                fullWidth
-                className="text-xl py-4"
-              >
-                Continue Challenge 🚀
-              </GameButton>
-              
-              <button 
-                onClick={() => {
-                  setShowRhythmSuccessModal(false);
-                  setStep(GameStep.STATS);
-                }}
-                className="text-slate-500 font-bold hover:text-slate-300 transition-colors text-sm uppercase tracking-widest"
-              >
-                View Stats
-              </button>
-              
-              <button 
-                onClick={() => {
-                  setShowRhythmSuccessModal(false);
-                  setStep(GameStep.RHYTHM_INTRO);
-                }}
-                className="text-slate-400 font-bold hover:text-white transition-colors underline decoration-2 underline-offset-4"
-              >
-                Back to Rhythm Home
               </button>
             </div>
           </div>
@@ -2018,6 +2487,28 @@ export default function App() {
             handleStartRandomRhythm();
           }}
         />
+      )}
+
+      {validationError && (
+        <div className="fixed inset-0 bg-slate-950/90 backdrop-blur-md flex items-center justify-center p-6 z-[60] animate-fade-in">
+          <div className="bg-white border-4 border-blue-200 rounded-[2rem] p-8 max-w-sm w-full shadow-2xl text-center space-y-6 animate-scale-in">
+            <div className="text-6xl mb-4">🤔</div>
+            <h3 className="text-2xl font-bold text-gray-800">Oops!</h3>
+            <p className="text-lg text-gray-600 font-medium">
+              {validationError}
+            </p>
+            <GameButton 
+              onClick={() => {
+                setValidationError(null);
+                setInputTranscript("");
+              }} 
+              color="blue" 
+              className="w-full"
+            >
+              Try Again
+            </GameButton>
+          </div>
+        </div>
       )}
 
       <BottomNav currentStep={step} onNavigate={handleNavigation} />

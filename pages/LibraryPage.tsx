@@ -162,10 +162,10 @@ const LibraryPage: React.FC<LibraryPageProps> = ({ userId, allDailyStats, viewin
             onClick={onExport}
             className="bg-blue-100 hover:bg-blue-200 text-blue-600 px-4 py-2 rounded-xl font-bold text-sm flex items-center gap-2 transition-colors"
           >
-              <span>💾</span> Backup Data
+              <span>💾</span> Export Words
           </button>
           <label className="bg-green-100 hover:bg-green-200 text-green-600 px-4 py-2 rounded-xl font-bold text-sm flex items-center gap-2 cursor-pointer transition-colors">
-              <span>📂</span> Import Data
+              <span>📂</span> Import Words
               <input type="file" accept=".json" onChange={onImport} className="hidden" />
           </label>
       </div>
@@ -204,9 +204,23 @@ const LibraryPage: React.FC<LibraryPageProps> = ({ userId, allDailyStats, viewin
                     <div key={w.word} className="group relative inline-flex items-center">
                         <button 
                           onClick={() => onWordClick(w.word, selectedDate)}
-                          className="inline-block bg-white border border-blue-200 hover:bg-blue-50 text-blue-700 rounded-lg px-2 py-1 sm:px-3 sm:py-1.5 text-xs sm:text-sm font-bold transition-colors shadow-sm active:scale-95 pr-6 sm:pr-8"
+                          className="inline-block bg-white border border-blue-200 hover:bg-blue-50 text-blue-700 rounded-lg px-2 py-1 sm:px-3 sm:py-1.5 text-xs sm:text-sm font-bold transition-colors shadow-sm active:scale-95 pr-12 sm:pr-16"
                         >
-                            {w.word}
+                            <span className="mr-1">{w.word}</span>
+                            <div className="flex flex-col items-start">
+                                <div className="flex items-center gap-1">
+                                    {w.data.partOfSpeech && (
+                                        <span className="text-[10px] sm:text-xs text-blue-400 lowercase font-bold">
+                                            {w.data.partOfSpeech}
+                                        </span>
+                                    )}
+                                    {w.data.translation && (
+                                        <span className="text-[10px] sm:text-xs text-gray-400 font-normal leading-tight">
+                                            {w.data.translation}
+                                        </span>
+                                    )}
+                                </div>
+                            </div>
                         </button>
                         <button
                           onClick={(e) => handleDeleteWord(w.word, e)}

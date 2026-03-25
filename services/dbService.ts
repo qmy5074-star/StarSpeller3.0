@@ -1,6 +1,6 @@
 import { WordData, DBWordRecord, User, DailyStats } from "../types";
 import { INITIAL_WORDS } from "./initialWords";
-import { encrypt, decrypt } from "../src/utils/encryption";
+import { encrypt, decrypt, sanitizeJsonString } from "../src/utils/encryption";
 
 const DB_NAME = 'StarSpellerDB';
 const DB_VERSION = 3; // Upgraded version for Daily Stats support
@@ -55,6 +55,52 @@ const openDB = (): Promise<IDBDatabase> => {
       }
     };
   });
+};
+
+// --- MIGRATION ---
+
+export const migrateWordDataSchema = async (): Promise<void> => {
+    const db = await openDB();
+    return new Promise((resolve, reject) => {
+        const transaction = db.transaction(WORD_STORE, 'readwrite');
+        const store = transaction.objectStore(WORD_STORE);
+        const request = store.openCursor();
+
+        request.onsuccess = (event) => {
+            const cursor = (event.target as IDBRequest).result;
+            if (cursor) {
+                const record = cursor.value as DBWordRecord;
+                const data = record.data as any;
+                let changed = false;
+
+                // Case 1: Old schema where translation was English and chineseTranslation was Chinese
+                // We want: translation = Chinese
+                if (data.chineseTranslation) {
+                    const oldChinese = data.chineseTranslation; // Chinese
+                    
+                    data.translation = oldChinese;
+                    delete data.chineseTranslation;
+                    changed = true;
+                } 
+                // Case 2: translation is likely English (contains ASCII only)
+                else if (data.translation) {
+                    const isLikelyEnglish = /^[a-zA-Z0-9\s.,!?'"()-]+$/.test(data.translation);
+                    if (isLikelyEnglish) {
+                        data.translation = ""; // Mark as missing Chinese so it can be fixed later or ignored
+                        changed = true;
+                    }
+                }
+
+                if (changed) {
+                    cursor.update(record);
+                }
+                cursor.continue();
+            } else {
+                resolve();
+            }
+        };
+        request.onerror = () => reject(request.error);
+    });
 };
 
 // --- USER MANAGEMENT ---
@@ -250,6 +296,30 @@ const EVA_SPECIFIC_WORDS: WordData[] = [
     imageUrl: "",
     relatedWords: ["wet", "muddy", "marsh"],
     phrases: ["swampy land", "swampy area", "hot and swampy"]
+  },
+  {
+    word: "dolphin",
+    parts: ["dol", "phin"],
+    partsPronunciation: ["dol", "fin"],
+    root: "dol (like doll) + phin (sounds like fin)",
+    phonetic: "/ˈdɑːl.fɪn/",
+    translation: "海豚",
+    sentence: "The dolphin jumped out of the water.",
+    imageUrl: "",
+    relatedWords: ["whale", "ocean", "swim"],
+    phrases: ["smart dolphin", "playful dolphin", "sea dolphin"]
+  },
+  {
+    word: "frightened",
+    parts: ["fright", "ened"],
+    partsPronunciation: ["frite", "und"],
+    root: "fright (like light) + ened (sounds like und)",
+    phonetic: "/ˈfraɪ.tənd/",
+    translation: "受惊的",
+    sentence: "The little girl was frightened by the loud noise.",
+    imageUrl: "",
+    relatedWords: ["scared", "afraid", "fear"],
+    phrases: ["frightened child", "feel frightened", "look frightened"]
   }
 ];
 
@@ -572,7 +642,7 @@ export const getAllDailyStats = async (userId: string): Promise<DailyStats[]> =>
 
 // --- IMPORT / EXPORT SYSTEM ---
 
-export const exportDatabaseToJson = async (userId: string, currentUsername: string): Promise<string> => {
+export const exportDatabaseToJson = async (userId: string, currentUsername: string, exportType: 'words' | 'account' = 'words'): Promise<string> => {
     const db = await openDB();
     return new Promise((resolve, reject) => {
         const tx = db.transaction([USER_STORE, WORD_STORE, DAILY_STATS_STORE], 'readonly');
@@ -586,7 +656,9 @@ export const exportDatabaseToJson = async (userId: string, currentUsername: stri
         const statsReq = statsIndex.getAll(userId);
         
         const data: any = {
-            exportDate: new Date().toISOString()
+            exportDate: new Date().toISOString(),
+            exportType: exportType,
+            username: currentUsername
         };
 
         let completed = 0;
@@ -603,15 +675,21 @@ export const exportDatabaseToJson = async (userId: string, currentUsername: stri
         };
 
         userReq.onsuccess = () => {
-             data.users = userReq.result ? [userReq.result] : [];
+             if (exportType === 'account') {
+                 data.users = userReq.result ? [userReq.result] : [];
+             }
              checkDone();
         };
         wordReq.onsuccess = () => {
-             data.words = wordReq.result || [];
+             if (exportType === 'words') {
+                 data.words = wordReq.result || [];
+             }
              checkDone();
         };
         statsReq.onsuccess = () => {
-             data.stats = statsReq.result || [];
+             if (exportType === 'account') {
+                 data.stats = statsReq.result || [];
+             }
              checkDone();
         };
         userReq.onerror = wordReq.onerror = statsReq.onerror = () => reject("Export failed");
@@ -620,18 +698,18 @@ export const exportDatabaseToJson = async (userId: string, currentUsername: stri
     });
 };
 
-export const importDatabaseFromJson = async (userId: string, currentUsername: string, jsonString: string, replace: boolean = true): Promise<number> => {
+export const importDatabaseFromJson = async (userId: string, currentUsername: string, jsonString: string, replace: boolean = true, importType: 'words' | 'account' = 'words'): Promise<number> => {
     const db = await openDB();
     return new Promise((resolve, reject) => {
-        let data: { users: User[], words: DBWordRecord[], stats?: DailyStats[] } | null = null;
+        let data: { users?: User[], words?: DBWordRecord[], stats?: DailyStats[], exportType?: string } | null = null;
         try {
             let processedJson = jsonString;
             
             // Try parsing directly
             try {
                 console.log("Attempting direct JSON parse");
-                // Sanitize control characters
-                const sanitized = processedJson.replace(/[\x00-\x09\x0B\x0C\x0E-\x1F]/g, ' ');
+                // Sanitize control characters and invalid escapes
+                const sanitized = sanitizeJsonString(processedJson);
                 data = JSON.parse(sanitized);
             } catch (e) {
                 console.log("Direct JSON parse failed, trying decrypt");
@@ -639,16 +717,25 @@ export const importDatabaseFromJson = async (userId: string, currentUsername: st
                 const decrypted = decrypt(jsonString);
                 console.log("Decrypted result length:", decrypted.length);
                 // Sanitize decrypted data
-                const sanitizedDecrypted = decrypted.replace(/[\x00-\x09\x0B\x0C\x0E-\x1F]/g, ' ');
+                const sanitizedDecrypted = sanitizeJsonString(decrypted);
                 data = JSON.parse(sanitizedDecrypted);
                 console.log("Parsed decrypted JSON successfully");
             }
 
-            if (!data || !data.users || !data.words) throw new Error("Invalid file structure");
+            if (!data) throw new Error("Invalid file structure");
             
-            const importedUser = data.users[0];
-            if (importedUser && importedUser.username.toLowerCase() !== currentUsername.toLowerCase()) {
-                throw new Error(`Cannot import data from account '${importedUser.username}' into account '${currentUsername}'.`);
+            if (importType === 'account' && data.exportType === 'words') {
+                throw new Error("Invalid file type: Expected an account backup file, but got a words backup file.");
+            }
+            if (importType === 'words' && data.exportType === 'account') {
+                throw new Error("Invalid file type: Expected a words backup file, but got an account backup file.");
+            }
+
+            if (importType === 'account' && data.users && data.users.length > 0) {
+                const importedUser = data.users[0];
+                if (importedUser && importedUser.username.toLowerCase() !== currentUsername.toLowerCase()) {
+                    throw new Error(`Cannot import account data from '${importedUser.username}' into account '${currentUsername}'.`);
+                }
             }
         } catch (e: any) {
             reject(e.message || "Invalid JSON file");
@@ -668,22 +755,26 @@ export const importDatabaseFromJson = async (userId: string, currentUsername: st
         let count = 0;
 
         const doImport = () => {
-            // Import Users (Merge/Overwrite) - only the current user
-            const importedUser = data!.users.find(u => u.id === userId) || data!.users[0];
-            if (importedUser) {
-                importedUser.id = userId; // Force it to current user
-                userStore.put(importedUser);
+            // Import Users (Merge/Overwrite) - only if account export
+            if (importType === 'account' && data!.users && data!.users.length > 0) {
+                const importedUser = data!.users.find(u => u.id === userId) || data!.users[0];
+                if (importedUser) {
+                    importedUser.id = userId; // Force it to current user
+                    userStore.put(importedUser);
+                }
             }
 
-            // Import Words (Merge/Overwrite)
-            data!.words.forEach(w => {
-                w.userId = userId; // Force it to current user
-                wordStore.put(w);
-                count++;
-            });
+            // Import Words (Merge/Overwrite) - only if words export
+            if (importType === 'words' && data!.words) {
+                data!.words.forEach(w => {
+                    w.userId = userId; // Force it to current user
+                    wordStore.put(w);
+                    count++;
+                });
+            }
 
-            // Import Stats (Merge/Overwrite)
-            if (data!.stats && statsStore) {
+            // Import Stats (Merge/Overwrite) - only if account export
+            if (importType === 'account' && data!.stats && statsStore) {
                 data!.stats.forEach(s => {
                     s.userId = userId; // Force it to current user
                     statsStore.put(s);
@@ -692,25 +783,48 @@ export const importDatabaseFromJson = async (userId: string, currentUsername: st
         };
 
         if (replace) {
-            // Clear existing words for user
-            const wordIndex = wordStore.index('userId');
-            const wordKeysReq = wordIndex.getAllKeys(userId);
-            wordKeysReq.onsuccess = () => {
-                wordKeysReq.result.forEach(key => wordStore.delete(key));
-                
-                if (statsStore) {
-                    const statsIndex = statsStore.index('userId');
-                    const statsKeysReq = statsIndex.getAllKeys(userId);
-                    statsKeysReq.onsuccess = () => {
-                        statsKeysReq.result.forEach(key => statsStore.delete(key));
-                        doImport();
-                    };
-                    statsKeysReq.onerror = () => reject(statsKeysReq.error);
-                } else {
+            let tasks = 0;
+            let completedTasks = 0;
+
+            const checkAllDone = () => {
+                completedTasks++;
+                if (completedTasks === tasks) {
                     doImport();
                 }
             };
-            wordKeysReq.onerror = () => reject(wordKeysReq.error);
+
+            if (importType === 'words') {
+                tasks++;
+            }
+            if (importType === 'account' && statsStore) {
+                tasks++;
+            }
+
+            if (tasks === 0) {
+                doImport();
+            }
+
+            if (importType === 'words') {
+                // Clear existing words for user
+                const wordIndex = wordStore.index('userId');
+                const wordKeysReq = wordIndex.getAllKeys(userId);
+                wordKeysReq.onsuccess = () => {
+                    wordKeysReq.result.forEach(key => wordStore.delete(key));
+                    checkAllDone();
+                };
+                wordKeysReq.onerror = () => reject(wordKeysReq.error);
+            }
+
+            if (importType === 'account' && statsStore) {
+                const statsIndex = statsStore.index('userId');
+                const statsKeysReq = statsIndex.getAllKeys(userId);
+                statsKeysReq.onsuccess = () => {
+                    statsKeysReq.result.forEach(key => statsStore.delete(key));
+                    checkAllDone();
+                };
+                statsKeysReq.onerror = () => reject(statsKeysReq.error);
+            }
+
         } else {
             doImport();
         }

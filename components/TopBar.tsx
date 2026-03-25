@@ -11,9 +11,11 @@ interface TopBarProps {
   onSwitchUser: (user: User | null) => void;
   onCreateUser: (name: string, password?: string) => Promise<void>;
   onManageUsers?: () => void;
+  onExportAccount?: () => void;
+  onImportAccount?: (e: React.ChangeEvent<HTMLInputElement>) => void;
 }
 
-const TopBar: React.FC<TopBarProps> = ({ stats, totalStars, totalBadges, darkMode = false, currentUser, allUsers, onSwitchUser, onCreateUser, onManageUsers }) => {
+const TopBar: React.FC<TopBarProps> = ({ stats, totalStars, totalBadges, darkMode = false, currentUser, allUsers, onSwitchUser, onCreateUser, onManageUsers, onExportAccount, onImportAccount }) => {
   const [isMenuOpen, setIsMenuOpen] = useState(false);
   const [isCreating, setIsCreating] = useState(false);
   const [newUserName, setNewUserName] = useState("");
@@ -99,6 +101,28 @@ const TopBar: React.FC<TopBarProps> = ({ stats, totalStars, totalBadges, darkMod
                      >
                        <span className="flex items-center gap-1">Log Out</span>
                      </button>
+
+                     <div className="h-px bg-gray-200/20 my-1"></div>
+
+                     {onExportAccount && (
+                       <button 
+                         onClick={() => { onExportAccount(); setIsMenuOpen(false); }}
+                         className={`text-left px-3 py-2 rounded-xl text-sm font-bold flex items-center gap-2 ${
+                           darkMode ? 'text-blue-400 hover:bg-slate-800' : 'text-blue-600 hover:bg-blue-50'
+                         }`}
+                       >
+                         <span>💾</span> Backup Account
+                       </button>
+                     )}
+                     
+                     {onImportAccount && (
+                       <label className={`text-left px-3 py-2 rounded-xl text-sm font-bold flex items-center gap-2 cursor-pointer ${
+                         darkMode ? 'text-green-400 hover:bg-slate-800' : 'text-green-600 hover:bg-green-50'
+                       }`}>
+                         <span>📂</span> Restore Account
+                         <input type="file" accept=".json" onChange={(e) => { onImportAccount(e); setIsMenuOpen(false); }} className="hidden" />
+                       </label>
+                     )}
 
                      {currentUser.username === 'Eva' && (
                        <>
