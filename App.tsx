@@ -232,6 +232,7 @@ export default function App() {
   // Step 3 Practice State
   const [practicePhase, setPracticePhase] = useState<'CHOICE'|'FILL'|'ORDER'>('CHOICE');
   const [practiceSuccess, setPracticeSuccess] = useState(false);
+  const [isRhythmSuccess, setIsRhythmSuccess] = useState(false);
   const [practiceTargetIndex, setPracticeTargetIndex] = useState(0);
   const [practiceOptions, setPracticeOptions] = useState<string[]>([]);
   const [practiceInput, setPracticeInput] = useState("");
@@ -788,6 +789,7 @@ export default function App() {
       alert("Speech recognition not supported on this browser. Please use Chrome on desktop.");
       return;
     }
+    if (navigator.vibrate) navigator.vibrate(50);
     setInputTranscript("");
     const recognition = new (window as any).webkitSpeechRecognition();
     recognitionRef.current = recognition;
@@ -819,17 +821,23 @@ export default function App() {
     recognition.start();
   };
 
-  const processWordInput = async (word: string, date?: string) => {
-    if (!currentUser) return;
+  const processWordInput = async (word: string, date?: string, mode: 'observe' | 'challenge' = 'observe') => {
+    console.log("processWordInput called with:", word, "date:", date, "mode:", mode);
+    if (!currentUser) {
+      console.warn("No current user, cannot process word input.");
+      return;
+    }
     setIsLoading(true);
     setPracticeDate(date || null);
     try {
+      console.log("Starting word processing...");
       // Check local list first (which is already filtered by user)
       const existing = allWordsList.find(w => w.word.toLowerCase() === word.toLowerCase());
       let data: WordData;
       let img: string;
 
       if (existing) {
+        console.log("Word exists in local list, reusing data.");
         data = existing.data;
         
         // Patch for "cake" if it was previously split incorrectly
@@ -873,9 +881,12 @@ export default function App() {
              }
         }
       } else {
+        console.log("Word not in local list, validating...");
         // Validate word before generating or searching
         const validation = await validateWordInput(word);
+        console.log("Validation result:", validation);
         if (!validation.isValid) {
+            console.warn("Word validation failed:", validation.reason);
             setValidationError(validation.reason || "Invalid word.");
             setIsLoading(false);
             return;
@@ -894,20 +905,25 @@ export default function App() {
             // If the reused word has no image, try to generate one now
             if (!img) {
                  try {
+                    console.log("Generating image for reused word...");
                     img = await generateWordImage(wordToProcess);
                     data.imageUrl = img;
                 } catch (e) {
-                    console.warn("Image gen failed", e);
+                    console.warn("Image gen failed for reused word", e);
                     img = `data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='400' height='400' viewBox='0 0 400 400'><rect width='400' height='400' fill='%23e0f2fe'/><text x='50%' y='50%' font-family='sans-serif' font-size='80' fill='%237dd3fc' text-anchor='middle' dominant-baseline='middle'>🖼️</text><text x='50%' y='65%' font-family='sans-serif' font-size='20' fill='%237dd3fc' text-anchor='middle' dominant-baseline='middle'>No Image</text></svg>`;
                 }
             }
         } else {
             // Generate fresh from AI
+            console.log("Generating fresh word data for:", wordToProcess);
             data = await generateWordData(wordToProcess);
+            console.log("Word data generated successfully.");
             try {
+                console.log("Generating image for fresh word...");
                 img = await generateWordImage(wordToProcess);
+                console.log("Image generated successfully.");
             } catch (e) {
-                console.warn("Image gen failed", e);
+                console.warn("Image gen failed for fresh word", e);
                 img = `data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='400' height='400' viewBox='0 0 400 400'><rect width='400' height='400' fill='%23e0f2fe'/><text x='50%' y='50%' font-family='sans-serif' font-size='80' fill='%237dd3fc' text-anchor='middle' dominant-baseline='middle'>🖼️</text><text x='50%' y='65%' font-family='sans-serif' font-size='20' fill='%237dd3fc' text-anchor='middle' dominant-baseline='middle'>No Image</text></svg>`;
             }
             data.imageUrl = img;
@@ -933,13 +949,23 @@ export default function App() {
       setPracticeSuccess(false);
       setWordData(data);
       setWordImage(img);
-      setStep(GameStep.STEP_1_OBSERVE);
-      startTimeRef.current = Date.now(); 
       
-      setHasPassedShadowing(false);
-      setShadowingAttempts(0);
-      setShadowingTranscript("");
-      speak(data.word);
+      if (mode === 'challenge') {
+          // Skip directly to test
+          setStep(GameStep.STEP_4_TEST);
+          const parts = data.word.split('').map((char, i) => ({ id: `${char}-${i}`, val: char }));
+          setTestBank(shuffleArray(parts));
+          setTestSlots(new Array(parts.length).fill(null));
+          setIsWrongAnimation(false);
+          speak(data.word);
+      } else {
+          setStep(GameStep.STEP_1_OBSERVE);
+          startTimeRef.current = Date.now(); 
+          setHasPassedShadowing(false);
+          setShadowingAttempts(0);
+          setShadowingTranscript("");
+          speak(data.word);
+      }
 
     } catch (e: any) {
       console.error(e);
@@ -1294,6 +1320,7 @@ export default function App() {
               setStats(targetStats);
           }
 
+          setIsRhythmSuccess(false);
           setStep(GameStep.SUCCESS);
       } else {
           playDissonance();
@@ -1452,6 +1479,7 @@ export default function App() {
 
               currentBPMRef.current += 5;
               speak("Amazing! You earned a Badge!");
+              setIsRhythmSuccess(true);
               setStep(GameStep.SUCCESS);
           }, 1000);
           return;
@@ -1510,77 +1538,146 @@ export default function App() {
 
   const renderHome = () => {
     const hasReviews = reviewQueue.length > 0;
+    const todayStats = stats;
+    
     return (
-    <div className="flex flex-col items-center justify-center gap-4 sm:gap-8 p-2 sm:p-6 h-[calc(100dvh-4rem-5rem)]">
-      <div className="text-center space-y-1 sm:space-y-2">
-         <span className="text-4xl sm:text-6xl animate-bounce inline-block">⭐</span>
-         <h1 className="text-3xl sm:text-5xl font-black text-blue-500 tracking-tight drop-shadow-sm lowercase">
-           star<br/><span className="text-orange-400">speller</span>
-         </h1>
-         <p className="text-xs sm:text-base text-gray-400 font-bold lowercase">vocabulary adventure</p>
+    <div className="flex flex-col items-center justify-center gap-6 sm:gap-10 p-4 sm:p-8 min-h-[calc(100dvh-10rem)] animate-fade-in">
+      {/* Hero Section */}
+      <div className="text-center space-y-3 sm:space-y-4">
+         <div className="relative inline-block">
+           <span className="text-6xl sm:text-8xl animate-bounce inline-block drop-shadow-lg">⭐</span>
+           <div className="absolute -top-2 -right-2 bg-yellow-400 text-white text-[10px] font-black px-2 py-0.5 rounded-full animate-pulse shadow-sm">NEW</div>
+         </div>
+         <div className="space-y-1">
+           <h1 className="text-4xl sm:text-6xl font-black text-blue-500 tracking-tighter drop-shadow-sm leading-none">
+             Star<span className="text-orange-400">Speller</span>
+           </h1>
+           <p className="text-xs sm:text-sm text-slate-400 font-bold uppercase tracking-[0.2em] opacity-80">Vocabulary Adventure</p>
+         </div>
+         
          {currentUser && (
-             <div className={`text-[10px] sm:text-sm font-bold px-2 py-0.5 sm:px-3 sm:py-1 rounded-full inline-block mt-1 sm:mt-2 flex items-center justify-center gap-1 w-max mx-auto ${currentUser.username === 'Eva' ? 'text-orange-500 bg-orange-50' : 'text-blue-300 bg-blue-50'}`}>
-                 Hi, {currentUser.username}!
-                 {currentUser.username === 'Eva' && <span title="Super Member">👑</span>}
+             <div className={`group cursor-default text-[11px] sm:text-sm font-black px-4 py-1.5 rounded-2xl inline-flex items-center gap-2 mt-2 transition-all hover:scale-105 ${currentUser.username === 'Eva' ? 'text-orange-600 bg-orange-100/50 border border-orange-200' : 'text-blue-500 bg-blue-50 border border-blue-100'}`}>
+                 <span className="opacity-70">Explorer:</span>
+                 <span className="flex items-center gap-1">
+                   {currentUser.username}
+                   {currentUser.username === 'Eva' && <span className="text-sm">👑</span>}
+                 </span>
              </div>
          )}
       </div>
-      <div className="w-full max-w-[16rem] sm:max-w-sm flex flex-col gap-4">
+
+      {/* Main Actions */}
+      <div className="w-full max-w-[18rem] sm:max-w-sm space-y-4">
         {!currentUser ? (
-          <div className="w-full bg-gradient-to-b from-blue-400 to-blue-500 rounded-3xl sm:rounded-[2rem] shadow-xl border-b-4 sm:border-b-8 border-blue-700 p-6 sm:p-8 flex flex-col items-center justify-center">
-            <form onSubmit={handleLoginSubmit} className="space-y-4 w-full">
-              <div>
+          <div className="w-full bg-white rounded-[2.5rem] shadow-2xl border-4 border-blue-50 p-8 flex flex-col items-center justify-center relative overflow-hidden">
+            <div className="absolute top-0 left-0 w-full h-2 bg-gradient-to-r from-blue-400 to-blue-600"></div>
+            <form onSubmit={handleLoginSubmit} className="space-y-5 w-full">
+              <div className="space-y-1">
+                <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest ml-1">Username</label>
                 <input
                   type="text"
                   value={loginUsername}
                   onChange={(e) => setLoginUsername(e.target.value)}
-                  className="w-full px-4 py-3 rounded-xl border-2 border-transparent focus:border-orange-400 focus:ring-0 outline-none transition-colors font-bold text-gray-800 bg-white/90 focus:bg-white placeholder-gray-400"
-                  placeholder="username"
+                  className="w-full px-5 py-3.5 rounded-2xl border-2 border-slate-100 focus:border-blue-400 focus:ring-0 outline-none transition-all font-bold text-gray-800 bg-slate-50 focus:bg-white placeholder-slate-300"
+                  placeholder="e.g. explorer123"
                   autoFocus
                 />
               </div>
-              <div className="relative">
-                <input
-                  type={showLoginPassword ? "text" : "password"}
-                  value={loginPassword}
-                  onChange={(e) => setLoginPassword(e.target.value)}
-                  className="w-full px-4 py-3 rounded-xl border-2 border-transparent focus:border-orange-400 focus:ring-0 outline-none transition-colors font-bold text-gray-800 bg-white/90 focus:bg-white placeholder-gray-400"
-                  placeholder="password"
-                />
-                <button 
-                  type="button"
-                  onClick={() => setShowLoginPassword(!showLoginPassword)}
-                  className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-600 p-1"
-                >
-                  {showLoginPassword ? "👁️" : "👁️‍🗨️"}
-                </button>
+              <div className="space-y-1">
+                <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest ml-1">Password</label>
+                <div className="relative">
+                  <input
+                    type={showLoginPassword ? "text" : "password"}
+                    value={loginPassword}
+                    onChange={(e) => setLoginPassword(e.target.value)}
+                    className="w-full px-5 py-3.5 rounded-2xl border-2 border-slate-100 focus:border-blue-400 focus:ring-0 outline-none transition-all font-bold text-gray-800 bg-slate-50 focus:bg-white placeholder-slate-300"
+                    placeholder="••••••••"
+                  />
+                  <button 
+                    type="button"
+                    onClick={() => setShowLoginPassword(!showLoginPassword)}
+                    className="absolute right-4 top-1/2 -translate-y-1/2 text-slate-300 hover:text-slate-500 p-1 transition-colors"
+                  >
+                    {showLoginPassword ? "👁️" : "👁️‍🗨️"}
+                  </button>
+                </div>
               </div>
               <div className="pt-2">
                 <button
                   type="submit"
-                  className="w-full py-3 px-4 rounded-xl font-black text-blue-600 bg-white hover:bg-gray-50 transition-colors lowercase shadow-lg active:translate-y-1 active:shadow-none flex items-center justify-center"
+                  className="w-full py-4 px-6 rounded-2xl font-black text-white bg-blue-500 hover:bg-blue-600 transition-all shadow-[0_8px_0_rgb(37,99,235)] active:shadow-none active:translate-y-2 flex items-center justify-center gap-3 group"
                 >
-                  <span className="text-xl">➜</span>
+                  <span className="text-lg">START ADVENTURE</span>
+                  <span className="text-xl group-hover:translate-x-1 transition-transform">➜</span>
                 </button>
               </div>
             </form>
           </div>
-        ) : hasReviews ? (
-           <button onClick={handleStartReview} className="w-full bg-gradient-to-b from-orange-400 to-orange-500 rounded-3xl sm:rounded-[3rem] shadow-xl border-b-4 sm:border-b-8 border-orange-700 active:border-b-0 active:translate-y-1 sm:active:translate-y-2 transition-all flex flex-col items-center justify-center group p-4 sm:p-8 relative overflow-hidden">
-              <div className="absolute top-0 left-0 w-full h-full bg-white opacity-10 animate-pulse"></div>
-              <span className="text-3xl sm:text-4xl relative z-10 mb-1 sm:mb-2">📅</span>
-              <span className="text-xl sm:text-3xl font-black text-white tracking-wide lowercase relative z-10">Start Review</span>
-              <span className="bg-white/30 text-white px-2 py-0.5 sm:px-3 sm:py-1 rounded-full text-[10px] sm:text-sm font-bold mt-1 sm:mt-2 relative z-10">{reviewQueue.length} words from yesterday</span>
-           </button>
         ) : (
-          <button onClick={handleStart} className="w-full h-48 sm:h-auto sm:aspect-square bg-gradient-to-b from-blue-400 to-blue-500 rounded-3xl sm:rounded-[3rem] shadow-xl border-b-4 sm:border-b-8 border-blue-700 active:border-b-0 active:translate-y-1 sm:active:translate-y-2 transition-all flex flex-col items-center justify-center group">
-              <div className="w-20 h-20 sm:w-32 sm:h-32 bg-white/20 rounded-full flex items-center justify-center backdrop-blur-sm group-hover:scale-105 transition duration-300">
-                 <svg className="w-10 h-10 sm:w-16 sm:h-16 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="3" d="M14.752 11.168l-3.197-2.132A1 1 0 0010 9.87v4.263a1 1 0 001.555.832l3.197-2.132a1 1 0 000-1.664z" /><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="3" d="M21 12a9 9 0 11-18 0 9 9 0 0118 0z" /></svg>
+          <div className="space-y-4">
+            {hasReviews ? (
+               <button 
+                onClick={handleStartReview} 
+                className="w-full bg-white rounded-[2.5rem] shadow-xl border-4 border-orange-100 p-6 flex flex-col items-center justify-center group relative overflow-hidden transition-all hover:scale-[1.02] active:scale-95"
+               >
+                  <div className="absolute top-0 left-0 w-full h-1.5 bg-orange-400"></div>
+                  <div className="flex items-center gap-4">
+                    <div className="w-16 h-16 bg-orange-50 rounded-2xl flex items-center justify-center text-3xl group-hover:rotate-12 transition-transform">📅</div>
+                    <div className="text-left">
+                      <h3 className="text-2xl font-black text-orange-500 leading-none">Review Time</h3>
+                      <p className="text-slate-400 font-bold text-xs mt-1">{reviewQueue.length} words to master</p>
+                    </div>
+                  </div>
+                  <div className="mt-4 w-full py-3 bg-orange-500 text-white font-black rounded-2xl shadow-[0_4px_0_rgb(194,65,12)] group-active:shadow-none group-active:translate-y-1 transition-all">
+                    GO TO REVIEW ➜
+                  </div>
+               </button>
+            ) : (
+              <button 
+                onClick={handleStart} 
+                className="w-full bg-white rounded-[2.5rem] shadow-xl border-4 border-blue-100 p-6 flex flex-col items-center justify-center group relative overflow-hidden transition-all hover:scale-[1.02] active:scale-95"
+              >
+                  <div className="absolute top-0 left-0 w-full h-1.5 bg-blue-500"></div>
+                  <div className="flex items-center gap-4">
+                    <div className="w-16 h-16 bg-blue-50 rounded-2xl flex items-center justify-center text-3xl group-hover:rotate-12 transition-transform">🚀</div>
+                    <div className="text-left">
+                      <h3 className="text-2xl font-black text-blue-600 leading-none">New Word</h3>
+                      <p className="text-slate-400 font-bold text-xs mt-1">Expand your vocabulary</p>
+                    </div>
+                  </div>
+                  <div className="mt-4 w-full py-3 bg-blue-500 text-white font-black rounded-2xl shadow-[0_4px_0_rgb(37,99,235)] group-active:shadow-none group-active:translate-y-1 transition-all">
+                    START NOW ➜
+                  </div>
+              </button>
+            )}
+
+            {/* Daily Stats Summary */}
+            <div className="bg-slate-50/50 rounded-3xl p-5 border-2 border-slate-100 flex justify-around items-center">
+              <div className="text-center">
+                <div className="text-2xl font-black text-blue-500">{todayStats?.stars || 0}</div>
+                <div className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Stars</div>
               </div>
-              <span className="text-xl sm:text-3xl font-black text-white mt-2 sm:mt-4 tracking-wide lowercase">New Word</span>
-          </button>
+              <div className="w-px h-8 bg-slate-200"></div>
+              <div className="text-center">
+                <div className="text-2xl font-black text-orange-400">{todayStats?.badges || 0}</div>
+                <div className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Badges</div>
+              </div>
+              <div className="w-px h-8 bg-slate-200"></div>
+              <div className="text-center">
+                <div className="text-2xl font-black text-purple-500">{todayStats?.highestBpm || 0}</div>
+                <div className="text-[10px] font-black text-slate-400 uppercase tracking-widest">BPM</div>
+              </div>
+            </div>
+          </div>
         )}
       </div>
+
+      {/* Footer Hint */}
+      {currentUser && (
+        <p className="text-[10px] font-bold text-slate-300 uppercase tracking-[0.3em] animate-pulse">
+          Adventure awaits you
+        </p>
+      )}
     </div>
     );
   };
@@ -1612,7 +1709,7 @@ export default function App() {
           }}
           onImport={handleImportWords}
           onExport={handleExportWords}
-          onWordClick={(word, date) => processWordInput(word, date)}
+          onWordClick={(word, date) => processWordInput(word, date, 'observe')}
           onDeleteWord={(word) => {
               const lowerWord = word.toLowerCase();
               setAllWordsList(prev => prev.filter(w => w.word.toLowerCase() !== lowerWord));
@@ -1630,33 +1727,82 @@ export default function App() {
   
   const renderQuotaExceeded = () => ( <div className="flex flex-col items-center justify-center gap-8 p-6 min-h-[calc(100vh-14rem)] text-center animate-fade-in"><span className="text-8xl relative z-10 block animate-bounce">🔋</span><p>Quota Exceeded</p><button onClick={handleRestart}>Home</button></div> );
   const renderInputWord = () => (
-    <div className="flex flex-col items-center justify-center gap-8 p-6 min-h-[calc(100vh-14rem)]">
-      <h2 className="text-3xl font-bold text-gray-700 text-center">What word are we learning?</h2>
-      <div className="h-20 flex items-center justify-center w-full max-w-md">
-        <input
-          type="text"
-          value={inputTranscript}
-          onChange={(e) => setInputTranscript(e.target.value)}
-          onKeyDown={(e) => {
-            if (e.key === 'Enter' && inputTranscript && !isLoading) {
-              processWordInput(inputTranscript);
-            }
-          }}
-          placeholder="...type here..."
-          className="text-4xl font-black text-center text-blue-500 border-b-4 border-blue-200 px-4 py-2 bg-transparent outline-none w-full placeholder:text-gray-300 placeholder:text-2xl placeholder:font-bold"
-          autoFocus
-        />
+    <div className="flex flex-col items-center justify-between p-6 min-h-[calc(100vh-10rem)] max-w-md mx-auto">
+      <div className="w-full flex flex-col items-center gap-8 mt-10">
+        <h2 className="text-2xl md:text-3xl font-black text-gray-700 text-center leading-tight">
+          What word are we <span className="text-blue-500">learning</span> today?
+        </h2>
+        
+        <div className="relative w-full group">
+          <input
+            type="text"
+            value={inputTranscript}
+            onChange={(e) => setInputTranscript(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter' && inputTranscript && !isLoading) {
+                processWordInput(inputTranscript);
+              }
+            }}
+            placeholder="Type or speak..."
+            className="text-3xl md:text-4xl font-black text-center text-blue-600 border-b-8 border-blue-100 focus:border-blue-400 px-4 py-4 bg-white/50 rounded-2xl shadow-sm transition-all outline-none w-full placeholder:text-gray-300 placeholder:text-xl md:placeholder:text-2xl"
+            autoFocus
+          />
+          {inputTranscript && (
+            <button 
+              onClick={() => setInputTranscript("")}
+              className="absolute right-4 top-1/2 -translate-y-1/2 text-gray-300 hover:text-gray-500"
+            >
+              <svg xmlns="http://www.w3.org/2000/svg" className="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={3} d="M6 18L18 6M6 6l12 12" />
+              </svg>
+            </button>
+          )}
+        </div>
       </div>
-      <div className="flex flex-col items-center gap-6">
-        <MicrophoneButton isListening={isListening} onStart={handleInputStart} onStop={handleVoiceStop} label="hold to speak" />
-        {inputTranscript && !isListening && (
-          <GameButton onClick={() => processWordInput(inputTranscript)} color="green" className="animate-pulse">
-            Let's Go! &rarr;
-          </GameButton>
+
+      <div className="flex flex-col items-center gap-8 w-full mb-10">
+        <div className="relative">
+          <MicrophoneButton isListening={isListening} onStart={handleInputStart} onStop={handleVoiceStop} label="Hold to speak" size="lg" />
+          {isListening && (
+            <div className="absolute -top-12 left-1/2 -translate-x-1/2 bg-red-500 text-white px-4 py-1 rounded-full text-xs font-black animate-bounce shadow-lg whitespace-nowrap">
+              I'M LISTENING! 👂
+            </div>
+          )}
+        </div>
+
+        <div className="h-16 flex items-center justify-center w-full">
+          {isLoading ? (
+            <div className="flex flex-col items-center gap-2">
+              <div className="flex gap-1">
+                <div className="w-2 h-2 bg-blue-500 rounded-full animate-bounce [animation-delay:-0.3s]"></div>
+                <div className="w-2 h-2 bg-blue-500 rounded-full animate-bounce [animation-delay:-0.15s]"></div>
+                <div className="w-2 h-2 bg-blue-500 rounded-full animate-bounce"></div>
+              </div>
+              <p className="text-blue-500 font-black text-sm uppercase tracking-tighter">Creating your lesson...</p>
+            </div>
+          ) : inputTranscript && !isListening ? (
+            <GameButton onClick={() => processWordInput(inputTranscript)} color="green" className="w-full max-w-xs py-4 text-xl shadow-[0_8px_0_rgb(22,163,74)] active:shadow-none active:translate-y-2">
+              LET'S GO! 🚀
+            </GameButton>
+          ) : null}
+        </div>
+
+        {validationError && (
+          <div className="bg-red-50 border-4 border-red-100 rounded-3xl p-6 w-full text-center shadow-inner animate-shake">
+            <p className="text-red-500 font-black text-lg leading-tight">{validationError}</p>
+            <button 
+              onClick={() => setValidationError(null)}
+              className="mt-3 px-4 py-1 bg-red-100 text-red-500 rounded-full text-xs font-black uppercase tracking-widest hover:bg-red-200 transition-colors"
+            >
+              Try Again
+            </button>
+          </div>
         )}
-        {isLoading && <p className="text-blue-500 font-bold animate-pulse">Creating your lesson...</p>}
       </div>
-      <button onClick={handleRestart} className="mt-8 text-gray-400 font-bold">cancel</button>
+
+      <button onClick={handleRestart} className="text-gray-300 font-black uppercase tracking-widest text-xs hover:text-gray-500 transition-colors">
+        Cancel
+      </button>
     </div>
   );
   const renderObserve = () => {
@@ -1758,13 +1904,17 @@ export default function App() {
             </div>
           </div>
 
-          <div className="p-8 flex flex-col items-center gap-6">
-            <div className="flex flex-wrap justify-center gap-2">
+          <div className="p-6 md:p-8 flex flex-col items-center gap-8">
+            <div className="flex flex-wrap justify-center gap-3">
               {wordData.parts.map((part, i) => (
                 <button
                   key={i}
                   onClick={() => handlePartClick(part, i)}
-                  className={`text-4xl font-black px-3 py-1 rounded-xl transition-all flex gap-0.5 ${activePartHighlight === i ? 'bg-blue-500 text-white scale-110' : 'bg-blue-50 text-blue-500 hover:bg-blue-100'}`}
+                  className={`text-3xl md:text-5xl font-black px-4 py-2 rounded-2xl transition-all flex gap-0.5 shadow-sm border-b-4 ${
+                    activePartHighlight === i 
+                      ? 'bg-blue-500 text-white border-blue-700 scale-110 -translate-y-1' 
+                      : 'bg-white text-blue-500 border-blue-100 hover:bg-blue-50'
+                  }`}
                 >
                   {part.split('').map((char, charIdx) => (
                     <span key={charIdx} className={isVowel(char) && activePartHighlight !== i ? 'text-red-500' : 'text-inherit'}>
@@ -1775,19 +1925,19 @@ export default function App() {
               ))}
             </div>
 
-            <div className="flex flex-col items-center gap-1">
-              <div className="flex gap-4 text-sm font-bold text-gray-400 uppercase tracking-wider items-center">
-                <span>{wordData.phonetic}</span>
+            <div className="flex flex-col items-center gap-2">
+              <div className="flex gap-4 text-sm font-black text-gray-400 uppercase tracking-widest items-center">
+                <span className="bg-gray-100 px-2 py-0.5 rounded-md">{wordData.phonetic}</span>
                 {wordData.partOfSpeech && (
                   <>
-                    <span>•</span>
-                    <span className="text-blue-400 lowercase">{wordData.partOfSpeech}</span>
+                    <span className="text-gray-200">•</span>
+                    <span className="text-blue-400 lowercase italic">{wordData.partOfSpeech}</span>
                   </>
                 )}
-                {wordData.translation && (
-                  <span className="text-gray-300 text-xs normal-case font-medium">{wordData.translation}</span>
-                )}
               </div>
+              {wordData.translation && (
+                <span className="text-gray-400 text-lg font-bold">{wordData.translation}</span>
+              )}
             </div>
 
             {wordData.phrases && wordData.phrases.length > 0 && (
@@ -1796,7 +1946,7 @@ export default function App() {
                   <button
                     key={i}
                     onClick={() => speak(phrase)}
-                    className="bg-pink-50 text-pink-500 border border-pink-100 px-3 py-1.5 rounded-lg text-sm font-bold hover:bg-pink-100 transition-colors"
+                    className="bg-pink-50 text-pink-600 border-2 border-pink-100 px-4 py-2 rounded-xl text-sm font-black hover:bg-pink-100 transition-all active:scale-95"
                   >
                     {phrase}
                   </button>
@@ -1804,46 +1954,61 @@ export default function App() {
               </div>
             )}
 
-            <div className="bg-yellow-50 p-4 rounded-xl w-full text-center border border-yellow-100">
-              <p className="text-lg text-gray-700 leading-relaxed">
+            <div className="bg-yellow-50 p-6 rounded-3xl w-full text-center border-4 border-yellow-100 shadow-inner">
+              <p className="text-xl md:text-2xl text-gray-700 leading-tight font-medium">
                 <SentenceHighlighter sentence={wordData.sentence} wordToHighlight={wordData.word} />
               </p>
-              <div className="mt-2 flex justify-center">
-                <button onClick={() => speak(wordData.sentence)} className="text-yellow-600 hover:text-yellow-700">
-                  <svg className="w-5 h-5" fill="currentColor" viewBox="0 0 20 20">
+              <div className="mt-4 flex justify-center">
+                <button onClick={() => speak(wordData.sentence)} className="bg-yellow-400 text-white p-3 rounded-full shadow-lg hover:scale-110 active:scale-95 transition-transform">
+                  <svg className="w-6 h-6" fill="currentColor" viewBox="0 0 20 20">
                     <path d="M10 18a8 8 0 100-16 8 8 0 000 16zM9.555 7.168A1 1 0 008 8v4a1 1 0 001.555.832l3-2a1 1 0 000-1.664l-3-2z" />
                   </svg>
                 </button>
               </div>
             </div>
 
-            <div className="text-center group cursor-pointer" onClick={() => speak(wordData.root)}>
-              <div className="flex items-center justify-center gap-1">
-                <span className="text-xs font-black text-blue-300 uppercase tracking-widest">Memory Aid</span>
-                <svg className="w-3 h-3 text-blue-300 opacity-0 group-hover:opacity-100 transition-opacity" fill="currentColor" viewBox="0 0 20 20">
+            <div className="text-center group cursor-pointer bg-blue-50/50 p-4 rounded-2xl w-full border-2 border-dashed border-blue-100" onClick={() => speak(wordData.root)}>
+              <div className="flex items-center justify-center gap-2">
+                <span className="text-[10px] font-black text-blue-400 uppercase tracking-[0.2em]">Memory Aid</span>
+                <svg className="w-4 h-4 text-blue-400" fill="currentColor" viewBox="0 0 20 20">
                   <path d="M10 18a8 8 0 100-16 8 8 0 000 16zM9.555 7.168A1 1 0 008 8v4a1 1 0 001.555.832l3-2a1 1 0 000-1.664l-3-2z" />
                 </svg>
               </div>
-              <p className="text-gray-600 font-medium mt-1 group-hover:text-blue-500 transition-colors">{wordData.root}</p>
+              <p className="text-gray-600 font-bold mt-1 text-lg leading-snug">{wordData.root}</p>
             </div>
           </div>
         </div>
 
-        <div className="flex flex-col items-center gap-4 w-full">
+        <div className="flex flex-col items-center gap-6 w-full mt-4">
           {!hasPassedShadowing ? (
-            <>
-              <p className="font-bold text-gray-400 uppercase tracking-widest text-xs">Read Aloud to Continue</p>
-              <MicrophoneButton isListening={isListening} onStart={handleShadowingStart} onStop={handleVoiceStop} size="lg" label="hold to speak" />
-              <div className="h-8 text-center">
-                {shadowingTranscript && <p className="text-blue-500 font-bold">{shadowingTranscript}</p>}
+            <div className="w-full flex flex-col items-center gap-4 bg-white/50 p-6 rounded-3xl border-2 border-blue-50 shadow-sm">
+              <p className="font-black text-gray-400 uppercase tracking-widest text-xs">Read Aloud to Continue</p>
+              <div className="relative">
+                <MicrophoneButton isListening={isListening} onStart={handleShadowingStart} onStop={handleVoiceStop} size="lg" label="hold to speak" />
+                {isListening && (
+                  <div className="absolute -top-10 left-1/2 -translate-x-1/2 bg-red-500 text-white px-3 py-1 rounded-full text-[10px] font-black animate-bounce shadow-lg whitespace-nowrap">
+                    GO AHEAD! 🎤
+                  </div>
+                )}
+              </div>
+              <div className="h-10 text-center flex items-center justify-center">
+                {shadowingTranscript ? (
+                  <p className="text-blue-600 font-black text-xl animate-fade-in">"{shadowingTranscript}"</p>
+                ) : (
+                  <p className="text-gray-300 font-bold italic text-sm">Waiting for you...</p>
+                )}
               </div>
               {shadowingAttempts > 2 && (
-                <button onClick={skipShadowing} className="text-gray-400 text-sm font-bold underline">skip for now</button>
+                <button onClick={skipShadowing} className="text-gray-400 text-xs font-black uppercase tracking-widest underline hover:text-gray-600">
+                  Skip for now
+                </button>
               )}
-            </>
+            </div>
           ) : (
-            <div className="w-full animate-fade-in-up">
-              <GameButton onClick={startStep2} fullWidth color="green" className="text-xl py-4">Start Practice &rarr;</GameButton>
+            <div className="w-full animate-bounce-in">
+              <GameButton onClick={startStep2} fullWidth color="green" className="text-2xl py-6 shadow-[0_10px_0_rgb(22,163,74)] active:shadow-none active:translate-y-2">
+                PRACTICE TIME! 🚀
+              </GameButton>
             </div>
           )}
         </div>
@@ -1855,15 +2020,15 @@ export default function App() {
     if (!wordData) return null;
     const isComplete = currentRootIndex >= wordData.parts.length;
     return (
-      <div className="flex flex-col items-center justify-center min-h-[60vh] gap-6 w-full">
-        <div className="text-center space-y-2 mb-4">
-          <h2 className="text-2xl font-black text-gray-700">Listen & Spell</h2>
-          <p className="text-gray-400 font-medium">
-            {isComplete ? "All done! Tap parts to hear spelling." : "Spell each part letters to unlock."}
+      <div className="flex flex-col items-center justify-center min-h-[70vh] gap-8 w-full px-4">
+        <div className="text-center space-y-3">
+          <h2 className="text-3xl font-black text-gray-700 leading-tight">Listen & Spell</h2>
+          <p className="text-gray-400 font-bold uppercase tracking-widest text-xs">
+            {isComplete ? "ALL DONE! 🎉" : "Spell each part letters to unlock"}
           </p>
         </div>
 
-        <div className="flex flex-wrap justify-center gap-3 mb-4 w-full px-2">
+        <div className="flex flex-wrap justify-center gap-4 w-full">
           {wordData.parts.map((part, index) => {
             const isDone = index < currentRootIndex;
             const isCurrent = index === currentRootIndex;
@@ -1879,69 +2044,83 @@ export default function App() {
                     speak(p);
                   }
                 }}
-                className={`relative flex items-center justify-center px-4 py-3 rounded-2xl border-b-4 transition-all duration-300 ${
+                className={`relative flex items-center justify-center px-6 py-4 rounded-3xl border-b-8 transition-all duration-300 ${
                   isDone
                     ? 'bg-green-100 border-green-300 text-green-700 scale-100'
                     : isCurrent
-                    ? 'bg-white border-blue-400 text-blue-600 scale-110 shadow-lg ring-4 ring-blue-100'
-                    : 'bg-gray-100 border-gray-200 text-gray-300 grayscale'
+                    ? 'bg-white border-blue-400 text-blue-600 scale-110 shadow-xl ring-8 ring-blue-50'
+                    : 'bg-gray-100 border-gray-200 text-gray-300 grayscale opacity-50'
                 }`}
               >
                 {isDone ? (
-                  <div className="flex items-center gap-1 font-black text-xl">
+                  <div className="flex items-center gap-2 font-black text-2xl">
                     <span>{part}</span>
-                    <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={3}>
-                      <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
-                    </svg>
+                    <div className="bg-green-500 text-white rounded-full p-0.5">
+                      <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={4}>
+                        <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
+                      </svg>
+                    </div>
                   </div>
                 ) : isCurrent ? (
-                  <div className="flex flex-col items-center">
-                    <span className="text-2xl font-black animate-pulse">?</span>
-                    <span className="text-[10px] uppercase font-bold tracking-widest">Listen</span>
+                  <div className="flex flex-col items-center gap-1">
+                    <span className="text-3xl font-black animate-pulse">?</span>
+                    <span className="text-[10px] uppercase font-black tracking-widest opacity-60">Listen</span>
                   </div>
                 ) : (
-                  <span className="text-xl font-bold opacity-50">???</span>
+                  <span className="text-2xl font-black opacity-30">???</span>
                 )}
               </button>
             );
           })}
         </div>
 
-        <div className="flex flex-col items-center gap-4 min-h-[160px] justify-center">
+        <div className="flex flex-col items-center gap-8 w-full min-h-[220px] justify-center bg-white/30 rounded-[3rem] p-8 border-2 border-dashed border-blue-100">
           {isComplete ? (
-            <div className="flex flex-col items-center gap-4 animate-fade-in-up">
-              <p className="text-green-500 font-black text-2xl animate-bounce">Complete!</p>
-              <GameButton onClick={() => startStep3()} color="green" className="text-lg shadow-xl">
-                Start Games &rarr;
+            <div className="flex flex-col items-center gap-6 animate-bounce-in">
+              <div className="text-6xl">🌟</div>
+              <p className="text-green-600 font-black text-3xl uppercase tracking-tighter">Perfect!</p>
+              <GameButton onClick={() => startStep3()} color="green" className="text-2xl py-6 px-12 shadow-[0_10px_0_rgb(22,163,74)] active:shadow-none active:translate-y-2">
+                LET'S PLAY! 🎮
               </GameButton>
             </div>
           ) : (
             <>
-              <div
-                className="bg-white p-4 rounded-full shadow-md cursor-pointer hover:bg-gray-50 active:scale-95 transition-all"
-                onClick={() => {
-                  const p = getPartPronunciation(wordData, currentRootIndex);
-                  speak(p);
-                }}
-              >
-                <svg className="w-10 h-10 text-blue-500" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M15.536 8.464a5 5 0 010 7.072m2.828-9.9a9 9 0 010 12.728M5.586 15H4a1 1 0 01-1-1v-4a1 1 0 011-1h1.586l4.707-4.707C10.923 3.663 12 4.109 12 5v14c0 .891-1.077 1.337-1.707.707L5.586 15z" />
-                </svg>
+              <div className="flex items-center gap-6">
+                <div
+                  className="bg-white p-6 rounded-full shadow-xl cursor-pointer hover:bg-blue-50 active:scale-90 transition-all border-4 border-blue-100 group"
+                  onClick={() => {
+                    const p = getPartPronunciation(wordData, currentRootIndex);
+                    speak(p);
+                  }}
+                >
+                  <svg className="w-12 h-12 text-blue-500 group-hover:scale-110 transition-transform" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2.5" d="M15.536 8.464a5 5 0 010 7.072m2.828-9.9a9 9 0 010 12.728M5.586 15H4a1 1 0 01-1-1v-4a1 1 0 011-1h1.586l4.707-4.707C10.923 3.663 12 4.109 12 5v14c0 .891-1.077 1.337-1.707.707L5.586 15z" />
+                  </svg>
+                </div>
+                <div className="w-px h-12 bg-blue-100"></div>
+                <MicrophoneButton isListening={isListening} onStart={handleListenStart} onStop={handleVoiceStop} label="hold to spell" />
               </div>
-              <MicrophoneButton isListening={isListening} onStart={handleListenStart} onStop={handleVoiceStop} label="hold to spell" />
+              
+              <div className="h-12 flex items-center justify-center w-full">
+                {isListening && (
+                  <div className="flex items-center gap-2 bg-red-500 text-white px-4 py-2 rounded-2xl font-black text-sm animate-pulse shadow-lg">
+                    <div className="w-2 h-2 bg-white rounded-full animate-ping"></div>
+                    SPELL IT NOW!
+                  </div>
+                )}
+                {step2Error && !isListening && (
+                  <div className="bg-red-50 text-red-500 px-6 py-3 rounded-2xl font-black animate-shake text-center border-2 border-red-100 shadow-sm leading-tight">
+                    {step2Error}
+                  </div>
+                )}
+              </div>
             </>
           )}
-          {step2FailCount > 2 && (
-            <div className="animate-fade-in">
-              <button onClick={handleStep2Skip} className="bg-gray-200 text-gray-600 px-4 py-2 rounded-lg font-bold hover:bg-gray-300 transition-colors shadow-sm">
-                I said it! (Skip)
-              </button>
-            </div>
-          )}
-          {step2Error && (
-            <div className="bg-red-50 text-red-500 px-4 py-2 rounded-lg font-bold animate-shake text-center">
-              {step2Error}
-            </div>
+          
+          {step2FailCount > 2 && !isComplete && (
+            <button onClick={handleStep2Skip} className="text-gray-400 text-xs font-black uppercase tracking-widest underline hover:text-gray-600 transition-colors">
+              I said it! (Skip)
+            </button>
           )}
         </div>
       </div>
@@ -1952,24 +2131,27 @@ export default function App() {
     if (!wordData) return null;
     if (practiceSuccess) {
       return (
-        <div className="flex flex-col items-center justify-center min-h-[60vh] gap-8 p-4 animate-fade-in-up">
-          <div className="text-center">
-            <h2 className="text-4xl font-black text-green-500 mb-2">Awesome!</h2>
-            <p className="text-gray-400 font-medium">Click parts to hear pronunciation</p>
+        <div className="flex flex-col items-center justify-center min-h-[60vh] gap-10 p-6 animate-fade-in-up text-center">
+          <div className="space-y-4">
+            <div className="text-7xl animate-bounce">✨</div>
+            <h2 className="text-5xl font-black text-green-500 tracking-tight">Awesome!</h2>
+            <p className="text-gray-400 font-bold uppercase tracking-widest text-xs">Tap parts to hear pronunciation</p>
           </div>
-          <div className="flex flex-wrap justify-center gap-2">
+          
+          <div className="flex flex-wrap justify-center gap-4">
             {wordData.parts.map((part, i) => (
               <button
                 key={i}
                 onClick={() => speak(getPartPronunciation(wordData, i))}
-                className="text-4xl font-black text-blue-600 bg-white px-4 py-2 rounded-xl shadow-md border-b-4 border-blue-200 hover:scale-105 active:scale-95 transition-all"
+                className="text-4xl font-black text-blue-600 bg-white px-6 py-4 rounded-3xl shadow-[0_8px_0_#dbeafe] border-2 border-blue-50 hover:scale-105 active:scale-95 active:shadow-none active:translate-y-2 transition-all"
               >
                 {part}
               </button>
             ))}
           </div>
-          <GameButton onClick={handleNextPracticePhase} color="green" className="text-xl py-4 shadow-xl mt-8">
-            Next Challenge &rarr;
+
+          <GameButton onClick={handleNextPracticePhase} color="green" className="text-2xl py-6 px-12 shadow-[0_10px_0_rgb(22,163,74)] active:shadow-none active:translate-y-2 mt-4">
+            {practicePhase === 'ORDER' ? "FINAL CHECK! 🎯" : "NEXT LEVEL 🚀"}
           </GameButton>
         </div>
       );
@@ -2169,21 +2351,30 @@ export default function App() {
       );
   };
   const renderSuccess = () => {
-    const isRhythm = rhythmQueue.length > 0;
-    
-    if (isRhythm) {
+    if (isRhythmSuccess) {
       return (
         <div className="flex flex-col items-center justify-center min-h-[calc(100vh-14rem)] gap-8 p-6 text-center animate-fade-in-up">
-            <h1 className="text-6xl animate-bounce">🏆</h1>
-            <h2 className="text-4xl font-black text-transparent bg-clip-text bg-gradient-to-r from-pink-500 to-violet-500">
-              Challenge Level Up!
-            </h2>
-            <div className="bg-white p-8 rounded-[2.5rem] shadow-xl border-4 border-violet-100 w-full max-w-sm space-y-4">
+            <div className="relative">
+              <h1 className="text-8xl animate-bounce">🏆</h1>
+              <div className="absolute -top-4 -right-4 bg-yellow-400 text-white p-2 rounded-full shadow-lg animate-ping">
+                <svg className="w-6 h-6" fill="currentColor" viewBox="0 0 20 20">
+                  <path d="M9.049 2.927c.3-.921 1.603-.921 1.902 0l1.07 3.292a1 1 0 00.95.69h3.462c.969 0 1.371 1.24.588 1.81l-2.8 2.034a1 1 0 00-.364 1.118l1.07 3.292c.3.921-.755 1.688-1.54 1.118l-2.8-2.034a1 1 0 00-1.175 0l-2.8 2.034c-.784.57-1.838-.197-1.539-1.118l1.07-3.292a1 1 0 00-.364-1.118L2.98 8.72c-.783-.57-.38-1.81.588-1.81h3.461a1 1 0 00.951-.69l1.07-3.292z" />
+                </svg>
+              </div>
+            </div>
+            <div className="space-y-2">
+              <h2 className="text-4xl font-black text-transparent bg-clip-text bg-gradient-to-r from-pink-500 to-violet-500">
+                Challenge Level Up!
+              </h2>
+              <p className="text-slate-400 font-bold">You're getting faster!</p>
+            </div>
+            <div className="bg-white p-8 rounded-[2.5rem] shadow-xl border-4 border-violet-100 w-full max-w-sm space-y-4 relative overflow-hidden">
+                <div className="absolute top-0 left-0 w-full h-1 bg-gradient-to-r from-pink-500 to-violet-500"></div>
                 <p className="text-slate-400 font-black uppercase tracking-widest text-xs">Rhythm Mastery</p>
                 <div className="text-6xl font-black text-violet-600">{currentBPMRef.current} <span className="text-2xl">BPM</span></div>
                 <div className="h-1 w-12 bg-violet-200 mx-auto rounded-full"></div>
-                <p className="text-slate-500 font-bold">
-                  You're getting faster! Ready for the next speed?
+                <p className="text-slate-500 font-bold text-sm">
+                  Ready for the next speed?
                 </p>
             </div>
             <div className="flex flex-col gap-4 w-full max-w-xs">
@@ -2191,14 +2382,14 @@ export default function App() {
                   onClick={() => startRhythmCommon()} 
                   color="purple" 
                   fullWidth
-                  className="text-xl py-4"
+                  className="text-xl py-5 shadow-[0_8px_0_rgb(124,58,237)] active:shadow-none active:translate-y-2"
                 >
                   Next Level 🚀
                 </GameButton>
                 
                 <button 
                   onClick={handleRestart}
-                  className="text-slate-400 font-bold hover:text-slate-600 transition-colors underline decoration-2 underline-offset-4"
+                  className="text-slate-400 font-black uppercase tracking-widest text-xs hover:text-slate-600 transition-colors underline decoration-2 underline-offset-4"
                 >
                   Back to Home
                 </button>
@@ -2209,55 +2400,127 @@ export default function App() {
 
     return (
       <div className="flex flex-col items-center justify-center min-h-[calc(100vh-14rem)] gap-8 p-6 text-center animate-fade-in-up">
-          <h1 className="text-6xl animate-bounce">🎉</h1>
-          <h2 className="text-4xl font-black text-green-500">Amazing Job!</h2>
-          <div className="bg-white p-6 rounded-2xl shadow-lg border-2 border-green-100 w-full max-w-sm">
-              <h3 className="text-3xl font-black text-blue-600 mb-1">{wordData?.word}</h3>
-              <div className="flex justify-center items-center gap-2 mb-2">
+          <div className="relative">
+            <h1 className="text-8xl animate-bounce">🎉</h1>
+            <div className="absolute -top-2 -right-2 text-4xl animate-ping">✨</div>
+          </div>
+          <div className="space-y-2">
+            <h2 className="text-4xl font-black text-green-500">Amazing Job!</h2>
+            <p className="text-gray-400 font-bold">You mastered a new word!</p>
+          </div>
+          
+          <div className="bg-white p-8 rounded-[2.5rem] shadow-xl border-4 border-green-100 w-full max-w-sm relative overflow-hidden">
+              <div className="absolute top-0 left-0 w-full h-1 bg-green-400"></div>
+              <h3 className="text-4xl font-black text-blue-600 mb-2 tracking-tight">{wordData?.word}</h3>
+              <div className="flex justify-center items-center gap-3">
                   {wordData?.partOfSpeech && (
-                      <span className="text-blue-400 text-xs font-bold lowercase">{wordData.partOfSpeech}</span>
+                      <span className="bg-blue-50 text-blue-500 px-3 py-1 rounded-full text-xs font-black uppercase tracking-widest">{wordData.partOfSpeech}</span>
                   )}
                   {wordData?.translation && (
-                      <span className="text-gray-400 text-xs font-medium">{wordData.translation}</span>
+                      <span className="text-gray-400 text-lg font-bold">{wordData.translation}</span>
                   )}
               </div>
           </div>
-          <p className="text-gray-400 font-bold">You mastered it!</p>
+
           <div className="flex flex-col gap-4 w-full max-w-xs">
-              <GameButton onClick={handleRestart} color="blue" fullWidth>Learn New Word</GameButton>
-              <GameButton 
-                  onClick={() => handleStartChallenge(rhythmQueue, isDailyChallenge ? currentBPMRef.current : 80, practiceDate || new Date().toDateString())} 
-                  color="purple" 
-                  fullWidth
-              >
-                  Daily Challenge (Start at {isDailyChallenge ? currentBPMRef.current : 80} BPM)
+              <GameButton onClick={handleRestart} color="blue" fullWidth className="text-xl py-5 shadow-[0_8px_0_rgb(37,99,235)] active:shadow-none active:translate-y-2">
+                Learn New Word 📚
               </GameButton>
+              
+              {rhythmQueue.length > 0 && (
+                <GameButton 
+                    onClick={() => handleStartChallenge(rhythmQueue, isDailyChallenge ? currentBPMRef.current : 80, practiceDate || new Date().toDateString())} 
+                    color="purple" 
+                    fullWidth
+                    className="text-xl py-5 shadow-[0_8px_0_rgb(124,58,237)] active:shadow-none active:translate-y-2"
+                >
+                    Daily Challenge 🥁
+                </GameButton>
+              )}
           </div>
       </div>
     );
   };
   const renderFail = () => {
     const isRhythm = isDailyChallenge || rhythmQueue.length > 0;
+    
+    if (isRhythm) {
+      return (
+        <div className="flex flex-col items-center justify-center min-h-[calc(100vh-14rem)] gap-8 p-6 text-center animate-fade-in text-white">
+          <div className="relative">
+             <div className="absolute inset-0 bg-red-500/20 blur-3xl rounded-full animate-pulse"></div>
+             <h1 className="text-8xl mb-2 animate-bounce relative z-10">😵‍💫</h1>
+             <div className="absolute -top-4 -right-4 bg-red-600 text-white text-[10px] font-black px-3 py-1.5 rounded-full animate-pulse uppercase tracking-widest shadow-lg z-20">
+               Beat Missed
+             </div>
+          </div>
+          
+          <div className="space-y-2 z-10">
+            <h2 className="text-6xl font-black text-transparent bg-clip-text bg-gradient-to-b from-red-400 to-red-700 tracking-tighter uppercase italic drop-shadow-2xl">
+              Game Over
+            </h2>
+            <p className="text-slate-400 font-bold text-lg max-w-[200px] mx-auto leading-tight">
+              The rhythm was too fast! Don't give up.
+            </p>
+          </div>
+
+          <div className="bg-slate-900/50 backdrop-blur-xl p-8 rounded-[2.5rem] border-2 border-slate-800 w-full max-w-sm space-y-6 shadow-2xl relative overflow-hidden">
+             <div className="absolute top-0 left-0 w-full h-1 bg-gradient-to-r from-red-500/50 via-red-500 to-red-500/50"></div>
+             
+             <div className="grid grid-cols-2 gap-4">
+                <div className="text-left space-y-1">
+                  <p className="text-slate-500 text-[10px] font-black uppercase tracking-widest">Progress</p>
+                  <p className="text-2xl font-black text-white">{rhythmWordIndex} <span className="text-xs text-slate-500">/ {rhythmQueue.length}</span></p>
+                </div>
+                <div className="text-right space-y-1">
+                  <p className="text-slate-500 text-[10px] font-black uppercase tracking-widest">Speed</p>
+                  <p className="text-2xl font-black text-red-400">{currentBPMRef.current} <span className="text-xs text-slate-500 uppercase">BPM</span></p>
+                </div>
+             </div>
+             
+             <div className="h-px bg-slate-800 w-full"></div>
+             
+             <p className="text-slate-400 font-bold text-sm italic">
+               "Practice makes perfect. Try again?"
+             </p>
+          </div>
+
+          <div className="flex flex-col gap-4 w-full max-w-xs z-10">
+            <GameButton 
+              onClick={() => startRhythmCommon()} 
+              color="red"
+              fullWidth
+              className="text-xl py-5 shadow-[0_8px_0_rgb(153,27,27)] active:shadow-none active:translate-y-2"
+            >
+              RETRY BEAT 🥁
+            </GameButton>
+            
+            <button 
+              onClick={handleRestart} 
+              className="text-slate-500 font-black uppercase tracking-widest text-[10px] hover:text-red-400 transition-colors underline decoration-2 underline-offset-8"
+            >
+              Back to Home
+            </button>
+          </div>
+        </div>
+      );
+    }
+
     return (
       <div className="flex flex-col items-center justify-center min-h-[calc(100vh-14rem)] gap-8 p-6 text-center animate-shake">
         <h1 className="text-6xl">😵</h1>
         <h2 className="text-4xl font-black text-red-500">Oops!</h2>
         <p className="text-gray-400 font-bold">Keep practicing, you can do it!</p>
         <GameButton 
-          onClick={() => isRhythm ? startRhythmCommon() : handleRestart()} 
+          onClick={handleRestart} 
           color="blue"
         >
           Try Again
         </GameButton>
-        {isRhythm && (
-          <button onClick={handleRestart} className="mt-4 text-gray-400 font-bold underline">
-            Quit to Home
-          </button>
-        )}
       </div>
     );
   };
-  const isDarkMode = step === GameStep.STEP_5_RHYTHM;
+  const isDarkMode = step === GameStep.STEP_5_RHYTHM || (step === GameStep.FAIL && (isDailyChallenge || rhythmQueue.length > 0));
 
   return (
     <div className={`min-h-screen font-sans selection:bg-blue-200 pb-28 transition-colors duration-500 ${isDarkMode ? 'bg-slate-950' : 'bg-[#F0F4F8]'}`}>

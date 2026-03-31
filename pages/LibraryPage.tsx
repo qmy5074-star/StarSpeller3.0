@@ -18,6 +18,8 @@ interface LibraryPageProps {
 const LibraryPage: React.FC<LibraryPageProps> = ({ userId, allDailyStats, viewingMonth, onMonthChange, onStartChallenge, onBack, onImport, onExport, onWordClick, onDeleteWord }) => {
   const [wordsMap, setWordsMap] = useState<Record<string, DBWordRecord[]>>({});
   const [selectedDate, setSelectedDate] = useState<string | null>(null);
+  const clickTimer = React.useRef<NodeJS.Timeout | null>(null);
+  const lastClickTime = React.useRef<number>(0);
 
   const statsMap = React.useMemo(() => {
     const sMap: Record<string, DailyStats> = {};
@@ -64,6 +66,29 @@ const LibraryPage: React.FC<LibraryPageProps> = ({ userId, allDailyStats, viewin
       } catch (err) {
           console.error("Failed to delete word:", err);
       }
+  };
+
+  const handleWordClickInternal = (word: string, date: string, e: React.MouseEvent) => {
+    e.stopPropagation();
+    const now = Date.now();
+    const DOUBLE_CLICK_DELAY = 300;
+
+    if (now - lastClickTime.current < DOUBLE_CLICK_DELAY) {
+      // Double click detected
+      if (clickTimer.current) {
+        clearTimeout(clickTimer.current);
+        clickTimer.current = null;
+      }
+      handleDeleteWord(word, e);
+      lastClickTime.current = 0;
+    } else {
+      // Single click potential
+      lastClickTime.current = now;
+      clickTimer.current = setTimeout(() => {
+        onWordClick(word, date);
+        clickTimer.current = null;
+      }, DOUBLE_CLICK_DELAY);
+    }
   };
 
   const getDaysInMonth = (date: Date) => {
@@ -173,76 +198,82 @@ const LibraryPage: React.FC<LibraryPageProps> = ({ userId, allDailyStats, viewin
       {renderCalendar()}
 
       {selectedDate && wordsMap[selectedDate] && (
-        <div className="fixed inset-0 bg-black/50 flex items-center justify-center p-4 z-50" onClick={() => setSelectedDate(null)}>
-          <div className="bg-white rounded-2xl p-4 sm:p-6 max-w-md w-full shadow-2xl max-h-[90vh] overflow-y-auto flex flex-col" onClick={e => e.stopPropagation()}>
-            <div className="flex justify-between items-center mb-4 shrink-0">
-              <h3 className="text-xl font-bold">{selectedDate}</h3>
-              <button onClick={() => setSelectedDate(null)} className="text-gray-400 hover:text-gray-600">✕</button>
+        <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-md flex items-center justify-center p-4 z-50 animate-fade-in" onClick={() => setSelectedDate(null)}>
+          <div className="bg-white rounded-[2rem] p-5 sm:p-6 max-w-md w-full shadow-2xl max-h-[76vh] flex flex-col animate-slide-up relative overflow-hidden" onClick={e => e.stopPropagation()}>
+            <div className="flex justify-between items-center mb-3 shrink-0">
+              <div className="space-y-0">
+                <h3 className="text-xl font-black text-slate-800 tracking-tight">{selectedDate}</h3>
+                <p className="text-slate-400 font-bold text-[10px] uppercase tracking-widest">Summary</p>
+              </div>
+              <button 
+                onClick={() => setSelectedDate(null)} 
+                className="w-8 h-8 flex items-center justify-center bg-slate-100 text-slate-400 hover:text-slate-600 rounded-full transition-colors"
+              >
+                ✕
+              </button>
             </div>
             
-            <div className="space-y-2 sm:space-y-3 mb-4 sm:mb-6 shrink-0">
-              <div className="flex justify-between p-2 sm:p-3 bg-gray-50 rounded-lg">
-                <span className="text-gray-600 flex items-center gap-2 text-sm sm:text-base"><span>📝</span> Words</span>
-                <span className="font-bold text-sm sm:text-base">{wordsMap[selectedDate].length}</span>
+            <div className="grid grid-cols-4 gap-2 mb-4 shrink-0">
+              <div className="p-2 bg-blue-50 rounded-xl border border-blue-100/50 flex flex-col items-center text-center">
+                <div className="text-lg">📝</div>
+                <div className="text-sm font-black text-blue-600 leading-none">{wordsMap[selectedDate].length}</div>
+                <div className="text-[8px] font-black text-blue-400 uppercase tracking-widest mt-1">Words</div>
               </div>
-              <div className="flex justify-between p-2 sm:p-3 bg-yellow-50 rounded-lg text-yellow-800">
-                <span className="flex items-center gap-2 text-sm sm:text-base"><span>⭐</span> Stars</span>
-                <span className="font-bold text-sm sm:text-base">{statsMap[selectedDate]?.stars || 0}</span>
+              <div className="p-2 bg-yellow-50 rounded-xl border border-yellow-100/50 flex flex-col items-center text-center">
+                <div className="text-lg">⭐</div>
+                <div className="text-sm font-black text-yellow-600 leading-none">{statsMap[selectedDate]?.stars || 0}</div>
+                <div className="text-[8px] font-black text-yellow-400 uppercase tracking-widest mt-1">Stars</div>
               </div>
-              <div className="flex justify-between p-2 sm:p-3 bg-blue-50 rounded-lg text-blue-800">
-                <span className="flex items-center gap-2 text-sm sm:text-base"><span>🏅</span> Badges</span>
-                <span className="font-bold text-sm sm:text-base">{statsMap[selectedDate]?.badges || 0}</span>
+              <div className="p-2 bg-orange-50 rounded-xl border border-orange-100/50 flex flex-col items-center text-center">
+                <div className="text-lg">🏅</div>
+                <div className="text-sm font-black text-orange-600 leading-none">{statsMap[selectedDate]?.badges || 0}</div>
+                <div className="text-[8px] font-black text-orange-400 uppercase tracking-widest mt-1">Badges</div>
               </div>
-              <div className="flex justify-between p-2 sm:p-3 bg-purple-50 rounded-lg text-purple-800">
-                <span className="flex items-center gap-2 text-sm sm:text-base"><span>⚡</span> Highest Speed</span>
-                <span className="font-bold text-sm sm:text-base">{statsMap[selectedDate]?.highestBpm || 80} BPM</span>
+              <div className="p-2 bg-purple-50 rounded-xl border border-purple-100/50 flex flex-col items-center text-center">
+                <div className="text-lg">⚡</div>
+                <div className="text-sm font-black text-purple-600 leading-none">{statsMap[selectedDate]?.highestBpm || 80}</div>
+                <div className="text-[8px] font-black text-purple-400 uppercase tracking-widest mt-1">BPM</div>
               </div>
             </div>
 
-            <div className="max-h-32 sm:max-h-40 overflow-y-auto mb-4 sm:mb-6 border rounded p-2 sm:p-3 flex flex-wrap gap-2 bg-gray-50 shrink-0">
-                {wordsMap[selectedDate].map(w => (
-                    <div key={w.word} className="group relative inline-flex items-center">
-                        <button 
-                          onClick={() => onWordClick(w.word, selectedDate)}
-                          className="inline-block bg-white border border-blue-200 hover:bg-blue-50 text-blue-700 rounded-lg px-2 py-1 sm:px-3 sm:py-1.5 text-xs sm:text-sm font-bold transition-colors shadow-sm active:scale-95 pr-12 sm:pr-16"
-                        >
-                            <span className="mr-1">{w.word}</span>
-                            <div className="flex flex-col items-start">
-                                <div className="flex items-center gap-1">
-                                    {w.data.partOfSpeech && (
-                                        <span className="text-[10px] sm:text-xs text-blue-400 lowercase font-bold">
-                                            {w.data.partOfSpeech}
-                                        </span>
-                                    )}
-                                    {w.data.translation && (
-                                        <span className="text-[10px] sm:text-xs text-gray-400 font-normal leading-tight">
-                                            {w.data.translation}
-                                        </span>
-                                    )}
-                                </div>
-                            </div>
-                        </button>
-                        <button
-                          onClick={(e) => handleDeleteWord(w.word, e)}
-                          className="absolute right-1 sm:right-1.5 text-gray-400 hover:text-red-500 hover:bg-red-50 rounded-full p-0.5 sm:p-1 transition-colors"
-                          title="Delete word"
-                        >
-                          <svg xmlns="http://www.w3.org/2000/svg" className="h-3 w-3 sm:h-4 sm:w-4" viewBox="0 0 20 20" fill="currentColor">
-                            <path fillRule="evenodd" d="M4.293 4.293a1 1 0 011.414 0L10 8.586l4.293-4.293a1 1 0 111.414 1.414L11.414 10l4.293 4.293a1 1 0 01-1.414 1.414L10 11.414l-4.293 4.293a1 1 0 01-1.414-1.414L8.586 10 4.293 5.707a1 1 0 010-1.414z" clipRule="evenodd" />
-                          </svg>
-                        </button>
-                    </div>
-                ))}
+            <div className="overflow-y-auto mb-4 pr-1 custom-scrollbar flex-grow min-h-0 max-h-[40vh]">
+              <div className="flex justify-between items-center px-1 mb-2 sticky top-0 bg-white z-10 py-1">
+                <h4 className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Words</h4>
+                <p className="text-[9px] font-bold text-slate-300 italic">Tap: Details • Double: Delete</p>
+              </div>
+              <div className="flex flex-wrap gap-2 p-0.5">
+                  {wordsMap[selectedDate].map(w => (
+                      <button 
+                        key={w.word}
+                        onClick={(e) => handleWordClickInternal(w.word, selectedDate, e)}
+                        className="group relative bg-white border border-slate-100 hover:border-blue-200 hover:bg-blue-50 text-slate-700 rounded-lg px-3 py-1.5 text-sm font-black transition-all shadow-sm active:scale-95 flex items-center gap-2"
+                      >
+                          <span>{w.word}</span>
+                          <div className="flex items-center gap-1.5 opacity-40 text-[10px] font-bold">
+                              {w.data.partOfSpeech && (
+                                  <span className="lowercase">
+                                      {w.data.partOfSpeech}
+                                  </span>
+                              )}
+                              {w.data.translation && (
+                                  <span>
+                                      {w.data.translation}
+                                  </span>
+                              )}
+                          </div>
+                      </button>
+                  ))}
+              </div>
             </div>
 
-            <div className="flex flex-col gap-2 sm:gap-3 shrink-0 mt-auto">
+            <div className="flex flex-col gap-2 shrink-0 pb-2 sm:pb-0">
               <button 
                 onClick={() => {
                   onStartChallenge(wordsMap[selectedDate].map(w => w.data), 80, selectedDate);
                 }}
-                className="w-full bg-gradient-to-r from-blue-500 to-indigo-500 text-white font-bold py-2 sm:py-3 rounded-xl shadow-md hover:scale-[1.02] transition-transform flex items-center justify-center gap-2 text-sm sm:text-base"
+                className="w-full bg-blue-500 text-white font-black py-3.5 rounded-xl shadow-[0_4px_0_rgb(37,99,235)] active:shadow-none active:translate-y-1 transition-all flex items-center justify-center gap-2 text-sm"
               >
-                <span>🎵</span> Start Challenge (80 BPM)
+                <span>🎵</span> START CHALLENGE
               </button>
               
               {(statsMap[selectedDate]?.highestBpm || 0) > 80 && (
@@ -251,9 +282,9 @@ const LibraryPage: React.FC<LibraryPageProps> = ({ userId, allDailyStats, viewin
                     const startBpm = statsMap[selectedDate]?.highestBpm || 80;
                     onStartChallenge(wordsMap[selectedDate].map(w => w.data), startBpm, selectedDate);
                   }}
-                  className="w-full bg-gradient-to-r from-purple-500 to-pink-500 text-white font-bold py-2 sm:py-3 rounded-xl shadow-md hover:scale-[1.02] transition-transform flex items-center justify-center gap-2 text-sm sm:text-base"
+                  className="w-full bg-purple-500 text-white font-black py-3.5 rounded-xl shadow-[0_4px_0_rgb(126,34,206)] active:shadow-none active:translate-y-1 transition-all flex items-center justify-center gap-2 text-sm"
                 >
-                  <span>🔥</span> Continue from {statsMap[selectedDate]?.highestBpm} BPM
+                  <span>🔥</span> CONTINUE SPEED
                 </button>
               )}
             </div>

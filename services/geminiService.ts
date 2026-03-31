@@ -84,7 +84,9 @@ export const validateWordInput = async (word: string): Promise<WordValidationRes
             correctedWord: { type: Type.STRING }
           },
           required: ["isValid"]
-        }
+        },
+        maxOutputTokens: 2048,
+        thinkingConfig: { thinkingLevel: ThinkingLevel.LOW }
       }
     });
     
@@ -136,6 +138,8 @@ export const generateWordData = async (word: string): Promise<WordData> => {
            - **Specific Override**: For "yellow", use ["yel", "low"].
            - **Specific Override**: For "dolphin", use ["dol", "phin"].
            - **Specific Override**: For "frightened", use ["fright", "ened"].
+           - **Specific Override**: For "thirsty", use ["thirs", "ty"].
+           - **Specific Override**: For "family", use ["fam", "i", "ly"].
            - **Goal**: Every part should be a pronounceable chunk, ideally following "One Vowel One Consonant" flow where the consonant leads the next vowel.
         2. "partsPronunciation": An array of simple English strings mirroring "parts" to help a TTS engine pronounce the syllable correctly in isolation.
            - **Crucial**: The goal is standard American pronunciation.
@@ -158,6 +162,8 @@ export const generateWordData = async (word: string): Promise<WordData> => {
            - **Specific Override**: "yel" in yellow -> "yel". "low" in yellow -> "loh".
            - **Specific Override**: "dol" in dolphin -> "dol". "phin" in dolphin -> "fin".
            - **Specific Override**: "fright" in frightened -> "frite". "ened" in frightened -> "und".
+           - **Specific Override**: "thirs" in thirsty -> "ther". "ty" in thirsty -> "stee".
+           - **Specific Override**: "fam" in family -> "fam". "i" in family -> "ih". "ly" in family -> "lee".
            - **Specific Override**: "vou" in favourite -> "vuh". "rite" in favourite -> "rit".
            - **Specific Override**: "vo" in favorite -> "vuh". "rite" in favorite -> "rit".
            - **Specific Override**: "ca" in education -> "kay". "du" in education -> "jew".
@@ -168,6 +174,8 @@ export const generateWordData = async (word: string): Promise<WordData> => {
            - **Specific Override**: For "yellow", use "yel (like bell) + low (like the word)".
            - **Specific Override**: For "dolphin", use "dol (like doll) + phin (sounds like fin)".
            - **Specific Override**: For "frightened", use "fright (like light) + ened (sounds like und)".
+           - **Specific Override**: For "thirsty", use "thirs (like first) + ty (sounds like tee)".
+           - **Specific Override**: For "family", use "fam (like ham) + i (sounds like ih) + ly (sounds like lee)".
         5. "phonetic": **Standard US English IPA**.
         6. "translation": The Chinese translation of the word.
         7. "sentence": Simple example sentence.
@@ -189,7 +197,9 @@ export const generateWordData = async (word: string): Promise<WordData> => {
             relatedWords: { type: Type.ARRAY, items: { type: Type.STRING } }
           },
           required: ["word", "partOfSpeech", "parts", "partsPronunciation", "root", "phonetic", "translation", "sentence", "phrases", "relatedWords"]
-        }
+        },
+        maxOutputTokens: 8192,
+        thinkingConfig: { thinkingLevel: ThinkingLevel.LOW }
       }
     });
 
@@ -220,6 +230,9 @@ export const generateWordImage = async (word: string): Promise<string> => {
       const response = await ai.models.generateContent({
         model,
         contents: { parts: [{ text: prompt }] },
+        config: {
+          maxOutputTokens: 2048
+        }
       });
 
       const candidates = response.candidates;
