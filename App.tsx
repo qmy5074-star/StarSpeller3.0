@@ -196,9 +196,7 @@ export default function App() {
     stars: 0,
     badges: 0,
     highestBpm: 0,
-    totalAttempts: 0,
-    successCount: 0,
-    totalTime: 0
+    totalAttempts: 0
   });
   const [allWordsList, setAllWordsList] = useState<DBWordRecord[]>([]);
   const [reviewQueue, setReviewQueue] = useState<DBWordRecord[]>([]);
@@ -208,6 +206,7 @@ export default function App() {
   const [practiceDate, setPracticeDate] = useState<string | null>(null);
   const [allDailyStats, setAllDailyStats] = useState<DailyStats[]>([]);
   const [importPending, setImportPending] = useState<{ file: File, data: any, type?: 'words' | 'account' } | null>(null);
+  const [importOverwrite, setImportOverwrite] = useState(false);
 
   // Current Word Session State
   const [wordData, setWordData] = useState<WordData | null>(null);
@@ -358,9 +357,7 @@ export default function App() {
             stars: 0,
             badges: 0,
             highestBpm: 0,
-            totalAttempts: 0,
-            successCount: 0,
-            totalTime: 0
+            totalAttempts: 0
           });
       } else {
           localStorage.removeItem('starSpellerUserId');
@@ -370,6 +367,13 @@ export default function App() {
   const [totalStars, setTotalStars] = useState(0);
   const [totalBadges, setTotalBadges] = useState(0);
 
+  const overallStats = React.useMemo(() => {
+    const tStars = allDailyStats.reduce((acc, curr) => acc + (curr.stars || 0), 0);
+    const tBadges = allDailyStats.reduce((acc, curr) => acc + (curr.badges || 0), 0);
+    const max = allDailyStats.reduce((acc, curr) => Math.max(acc, curr.highestBpm || 0), 80);
+    return { totalStars: tStars, totalBadges: tBadges, maxBpm: max };
+  }, [allDailyStats]);
+
   const loadUserData = async (userId: string) => {
       await initializeDatabase(userId);
       
@@ -378,7 +382,9 @@ export default function App() {
       
       const today = await getTodaysWords(userId);
       setTodaysWordsCount(today.length);
-      setRhythmQueue(today.map(r => r.data));
+      // Randomly select at most 5 words from today's words for the rhythm challenge
+      const shuffledToday = shuffleArray(today.map(r => r.data));
+      setRhythmQueue(shuffledToday.slice(0, 5));
 
       const review = await getWordsForReview(userId);
       setReviewQueue(review);
@@ -396,9 +402,7 @@ export default function App() {
               stars: 0,
               badges: 0,
               highestBpm: 0,
-              totalAttempts: 0,
-              successCount: 0,
-              totalTime: 0
+              totalAttempts: 0
           });
       }
   };
@@ -563,6 +567,7 @@ export default function App() {
           try {
               const json = event.target?.result as string;
               setImportPending({ file, data: json, type: 'words' });
+              setImportOverwrite(false);
           } catch (err) {
               console.error(err);
               alert("Failed to read import data.");
@@ -601,6 +606,7 @@ export default function App() {
           try {
               const json = event.target?.result as string;
               setImportPending({ file, data: json, type: 'account' });
+              setImportOverwrite(false);
           } catch (err) {
               console.error(err);
               alert("Failed to read import data.");
@@ -715,7 +721,8 @@ export default function App() {
           currentBPMRef.current = 80;
           if (currentUser) {
               getTodaysWords(currentUser.id).then(words => {
-                  setRhythmQueue(words.map(w => w.data));
+                  const shuffled = shuffleArray(words.map(w => w.data));
+                  setRhythmQueue(shuffled.slice(0, 5));
               });
           }
       }
@@ -875,9 +882,11 @@ export default function App() {
              
              if (date) {
                  const targetDateWords = await getWordsByDate(currentUser.id, date);
-                 setRhythmQueue(targetDateWords.map(r => r.data));
+                 const shuffled = shuffleArray(targetDateWords.map(r => r.data));
+                 setRhythmQueue(shuffled.slice(0, 5));
              } else {
-                 setRhythmQueue(today.map(r => r.data));
+                 const shuffled = shuffleArray(today.map(r => r.data));
+                 setRhythmQueue(shuffled.slice(0, 5));
              }
         }
       } else {
@@ -940,9 +949,11 @@ export default function App() {
         
         if (date) {
             const targetDateWords = await getWordsByDate(currentUser.id, date);
-            setRhythmQueue(targetDateWords.map(r => r.data));
+            const shuffled = shuffleArray(targetDateWords.map(r => r.data));
+            setRhythmQueue(shuffled.slice(0, 5));
         } else {
-            setRhythmQueue(today.map(r => r.data));
+            const shuffled = shuffleArray(today.map(r => r.data));
+            setRhythmQueue(shuffled.slice(0, 5));
         }
       }
 
@@ -1276,9 +1287,10 @@ export default function App() {
           // Refresh list for rhythm game based on the target date
           const targetDateWords = await getWordsByDate(currentUser.id, targetDate);
           
-          // Use the words from the target date for the rhythm game
+          // Use at most 5 random words from the target date for the rhythm game
           if (targetDateWords.length > 0) {
-              setRhythmQueue(targetDateWords.map(r => r.data));
+              const shuffled = shuffleArray(targetDateWords.map(r => r.data));
+              setRhythmQueue(shuffled.slice(0, 5));
           } else {
               setRhythmQueue([wordData]);
           }
@@ -1295,13 +1307,9 @@ export default function App() {
                   stars: 0,
                   badges: 0,
                   highestBpm: 0,
-                  totalAttempts: 0,
-                  successCount: 0,
-                  totalTime: 0
+                  totalAttempts: 0
               };
           }
-          targetStats.successCount = (targetStats.successCount || 0) + 1;
-          targetStats.totalTime = (targetStats.totalTime || 0) + timeTaken;
           targetStats.stars = (targetStats.stars || 0) + 1;
 
           await saveDailyStats(targetStats);
@@ -1345,7 +1353,9 @@ export default function App() {
       if (currentUser) {
           const targetDateWords = await getWordsByDate(currentUser.id, targetDate);
           if (targetDateWords.length > 0) {
-              queue = targetDateWords.map(r => r.data);
+              // Randomly select at most 5 words from today's words
+              const shuffled = shuffleArray(targetDateWords.map(r => r.data));
+              queue = shuffled.slice(0, 5);
           } else if (wordData) {
               queue = [wordData];
           }
@@ -1447,9 +1457,7 @@ export default function App() {
                           stars: 0,
                           badges: 0,
                           highestBpm: 0,
-                          totalAttempts: 0,
-                          successCount: 0,
-                          totalTime: 0
+                          totalAttempts: 0
                       };
                       
                       const nextBpm = currentBPMRef.current + 5;
@@ -1557,7 +1565,7 @@ export default function App() {
          
          {currentUser && (
              <div className={`group cursor-default text-[11px] sm:text-sm font-black px-4 py-1.5 rounded-2xl inline-flex items-center gap-2 mt-2 transition-all hover:scale-105 ${currentUser.username === 'Eva' ? 'text-orange-600 bg-orange-100/50 border border-orange-200' : 'text-blue-500 bg-blue-50 border border-blue-100'}`}>
-                 <span className="opacity-70">Explorer:</span>
+                 <span className="opacity-70">hi！</span>
                  <span className="flex items-center gap-1">
                    {currentUser.username}
                    {currentUser.username === 'Eva' && <span className="text-sm">👑</span>}
@@ -1654,17 +1662,20 @@ export default function App() {
             {/* Daily Stats Summary */}
             <div className="bg-slate-50/50 rounded-3xl p-5 border-2 border-slate-100 flex justify-around items-center">
               <div className="text-center">
-                <div className="text-2xl font-black text-blue-500">{todayStats?.stars || 0}</div>
+                <div className="text-xl mb-1">⭐</div>
+                <div className="text-2xl font-black text-blue-500">{overallStats.totalStars}</div>
                 <div className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Stars</div>
               </div>
               <div className="w-px h-8 bg-slate-200"></div>
               <div className="text-center">
-                <div className="text-2xl font-black text-orange-400">{todayStats?.badges || 0}</div>
+                <div className="text-xl mb-1">🏅</div>
+                <div className="text-2xl font-black text-orange-400">{overallStats.totalBadges}</div>
                 <div className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Badges</div>
               </div>
               <div className="w-px h-8 bg-slate-200"></div>
               <div className="text-center">
-                <div className="text-2xl font-black text-purple-500">{todayStats?.highestBpm || 0}</div>
+                <div className="text-xl mb-1">⚡</div>
+                <div className="text-2xl font-black text-purple-500">{overallStats.maxBpm}</div>
                 <div className="text-[10px] font-black text-slate-400 uppercase tracking-widest">BPM</div>
               </div>
             </div>
@@ -1689,6 +1700,9 @@ export default function App() {
           userId={currentUser.id}
           onBack={() => setStep(GameStep.HOME)}
           onStartRandomRhythm={handleStartRandomRhythm}
+          totalStars={overallStats.totalStars}
+          totalBadges={overallStats.totalBadges}
+          maxBpm={overallStats.maxBpm}
         />
     );
   };
@@ -1925,19 +1939,22 @@ export default function App() {
               ))}
             </div>
 
-            <div className="flex flex-col items-center gap-2">
-              <div className="flex gap-4 text-sm font-black text-gray-400 uppercase tracking-widest items-center">
-                <span className="bg-gray-100 px-2 py-0.5 rounded-md">{wordData.phonetic}</span>
+            <div className="flex flex-col items-center gap-2 w-full">
+              <div className="flex flex-wrap gap-x-4 gap-y-2 text-sm font-black text-gray-400 uppercase tracking-widest items-center justify-center">
+                <span className="bg-gray-100 px-2 py-0.5 rounded-md whitespace-nowrap">{wordData.phonetic}</span>
                 {wordData.partOfSpeech && (
-                  <>
+                  <div className="flex items-center gap-2">
                     <span className="text-gray-200">•</span>
-                    <span className="text-blue-400 lowercase italic">{wordData.partOfSpeech}</span>
-                  </>
+                    <span className="text-blue-400 lowercase italic whitespace-nowrap">{wordData.partOfSpeech}</span>
+                  </div>
+                )}
+                {wordData.translation && (
+                  <div className="flex items-center gap-2">
+                    <span className="text-gray-200">•</span>
+                    <span className="text-gray-400 text-base font-bold normal-case">{wordData.translation}</span>
+                  </div>
                 )}
               </div>
-              {wordData.translation && (
-                <span className="text-gray-400 text-lg font-bold">{wordData.translation}</span>
-              )}
             </div>
 
             {wordData.phrases && wordData.phrases.length > 0 && (
@@ -1954,16 +1971,17 @@ export default function App() {
               </div>
             )}
 
-            <div className="bg-yellow-50 p-6 rounded-3xl w-full text-center border-4 border-yellow-100 shadow-inner">
-              <p className="text-xl md:text-2xl text-gray-700 leading-tight font-medium">
+            <div 
+              onClick={() => speak(wordData.sentence)}
+              className="bg-yellow-50 p-6 rounded-3xl w-full text-center border-4 border-yellow-100 shadow-inner cursor-pointer group active:scale-[0.99] transition-all"
+            >
+              <div className="text-xl md:text-2xl text-gray-700 leading-tight font-medium flex flex-wrap items-center justify-center gap-2">
                 <SentenceHighlighter sentence={wordData.sentence} wordToHighlight={wordData.word} />
-              </p>
-              <div className="mt-4 flex justify-center">
-                <button onClick={() => speak(wordData.sentence)} className="bg-yellow-400 text-white p-3 rounded-full shadow-lg hover:scale-110 active:scale-95 transition-transform">
-                  <svg className="w-6 h-6" fill="currentColor" viewBox="0 0 20 20">
-                    <path d="M10 18a8 8 0 100-16 8 8 0 000 16zM9.555 7.168A1 1 0 008 8v4a1 1 0 001.555.832l3-2a1 1 0 000-1.664l-3-2z" />
+                <div className="text-yellow-500 group-hover:scale-110 transition-transform flex-shrink-0">
+                  <svg xmlns="http://www.w3.org/2000/svg" className="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15.536 8.464a5 5 0 010 7.072m2.828-9.9a9 9 0 010 12.728M5.586 15H4a1 1 0 01-1-1v-4a1 1 0 011-1h1.586l4.707-4.707C10.923 3.663 12 4.109 12 5v14c0 .891-1.077 1.337-1.707.707L5.586 15z" />
                   </svg>
-                </button>
+                </div>
               </div>
             </div>
 
@@ -2699,8 +2717,28 @@ export default function App() {
                         {isAccountExport ? 'Account & Stats' : 'Words'}
                     </span>
                   </div>
-                  <div className="mt-4 p-3 bg-yellow-50 text-yellow-800 rounded-lg text-sm">
-                    ⚠️ Warning: This will overwrite your current {importPending.type === 'account' ? 'account stats' : 'words'}. This action cannot be undone.
+                  
+                  <label className="flex items-center gap-3 cursor-pointer mt-4 p-3 bg-gray-50 rounded-xl hover:bg-gray-100 transition-all border-2 border-transparent active:border-blue-200">
+                    <input 
+                      type="checkbox" 
+                      checked={importOverwrite} 
+                      onChange={(e) => setImportOverwrite(e.target.checked)}
+                      className="w-5 h-5 rounded border-gray-300 text-blue-500 focus:ring-blue-500"
+                    />
+                    <div className="flex flex-col">
+                      <span className="text-sm font-black text-gray-700">Overwrite existing data</span>
+                      <span className="text-[10px] text-gray-500 font-bold uppercase tracking-wider">If checked, imported data will replace existing records</span>
+                    </div>
+                  </label>
+
+                  <div className={`mt-4 p-4 rounded-2xl text-sm font-bold flex items-start gap-3 transition-colors ${importOverwrite ? 'bg-red-50 text-red-700 border-2 border-red-100' : 'bg-blue-50 text-blue-700 border-2 border-blue-100'}`}>
+                    <span className="text-lg">{importOverwrite ? '⚠️' : 'ℹ️'}</span>
+                    <p className="leading-tight">
+                      {importOverwrite 
+                        ? "Warning: This will overwrite existing records in your database. This action cannot be undone."
+                        : "Merge Mode: This will only add missing records. Your existing learning history will be preserved."
+                      }
+                    </p>
                   </div>
                 </div>
               );
@@ -2709,14 +2747,14 @@ export default function App() {
             <div className="flex justify-end gap-3">
               <button 
                 onClick={() => setImportPending(null)}
-                className="px-4 py-2 text-gray-500 font-bold hover:bg-gray-100 rounded-lg transition-colors"
+                className="px-6 py-3 text-gray-500 font-black uppercase tracking-widest hover:bg-gray-100 rounded-xl transition-colors text-xs"
               >
                 Cancel
               </button>
               <button 
                 onClick={async () => {
                   try {
-                    const count = await importDatabaseFromJson(currentUser!.id, currentUser!.username, importPending.data, true, importPending.type || 'words');
+                    const count = await importDatabaseFromJson(currentUser!.id, currentUser!.username, importPending.data, importOverwrite, importPending.type || 'words');
                     setImportPending(null);
                     alert(`Successfully imported ${importPending.type === 'account' ? 'account data' : count + ' words'}!`);
                     // Reload current user data

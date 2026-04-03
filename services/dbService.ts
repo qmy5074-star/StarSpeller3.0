@@ -698,7 +698,7 @@ export const exportDatabaseToJson = async (userId: string, currentUsername: stri
     });
 };
 
-export const importDatabaseFromJson = async (userId: string, currentUsername: string, jsonString: string, replace: boolean = true, importType: 'words' | 'account' = 'words'): Promise<number> => {
+export const importDatabaseFromJson = async (userId: string, currentUsername: string, jsonString: string, overwrite: boolean = false, importType: 'words' | 'account' = 'words'): Promise<number> => {
     const db = await openDB();
     return new Promise((resolve, reject) => {
         let data: { users?: User[], words?: DBWordRecord[], stats?: DailyStats[], exportType?: string } | null = null;
@@ -764,70 +764,44 @@ export const importDatabaseFromJson = async (userId: string, currentUsername: st
                 }
             }
 
-            // Import Words (Merge/Overwrite) - only if words export
+            // Import Words
             if (importType === 'words' && data!.words) {
                 data!.words.forEach(w => {
                     w.userId = userId; // Force it to current user
-                    wordStore.put(w);
-                    count++;
+                    if (overwrite) {
+                        wordStore.put(w);
+                        count++;
+                    } else {
+                        const getReq = wordStore.get([userId, w.word.toLowerCase()]);
+                        getReq.onsuccess = () => {
+                            if (!getReq.result) {
+                                wordStore.put(w);
+                                count++;
+                            }
+                        };
+                    }
                 });
             }
 
-            // Import Stats (Merge/Overwrite) - only if account export
+            // Import Stats
             if (importType === 'account' && data!.stats && statsStore) {
                 data!.stats.forEach(s => {
                     s.userId = userId; // Force it to current user
-                    statsStore.put(s);
+                    if (overwrite) {
+                        statsStore.put(s);
+                    } else {
+                        const getReq = statsStore.get([userId, s.date]);
+                        getReq.onsuccess = () => {
+                            if (!getReq.result) {
+                                statsStore.put(s);
+                            }
+                        };
+                    }
                 });
             }
         };
 
-        if (replace) {
-            let tasks = 0;
-            let completedTasks = 0;
-
-            const checkAllDone = () => {
-                completedTasks++;
-                if (completedTasks === tasks) {
-                    doImport();
-                }
-            };
-
-            if (importType === 'words') {
-                tasks++;
-            }
-            if (importType === 'account' && statsStore) {
-                tasks++;
-            }
-
-            if (tasks === 0) {
-                doImport();
-            }
-
-            if (importType === 'words') {
-                // Clear existing words for user
-                const wordIndex = wordStore.index('userId');
-                const wordKeysReq = wordIndex.getAllKeys(userId);
-                wordKeysReq.onsuccess = () => {
-                    wordKeysReq.result.forEach(key => wordStore.delete(key));
-                    checkAllDone();
-                };
-                wordKeysReq.onerror = () => reject(wordKeysReq.error);
-            }
-
-            if (importType === 'account' && statsStore) {
-                const statsIndex = statsStore.index('userId');
-                const statsKeysReq = statsIndex.getAllKeys(userId);
-                statsKeysReq.onsuccess = () => {
-                    statsKeysReq.result.forEach(key => statsStore.delete(key));
-                    checkAllDone();
-                };
-                statsKeysReq.onerror = () => reject(statsKeysReq.error);
-            }
-
-        } else {
-            doImport();
-        }
+        doImport();
 
         tx.oncomplete = () => resolve(count);
         tx.onerror = () => reject(tx.error);

@@ -6,28 +6,12 @@ interface StatsPageProps {
   userId: string;
   onBack: () => void;
   onStartRandomRhythm: () => void;
+  totalStars: number;
+  totalBadges: number;
+  maxBpm: number;
 }
 
-const StatsPage: React.FC<StatsPageProps> = ({ userId, onBack, onStartRandomRhythm }) => {
-  const [totalStars, setTotalStars] = useState(0);
-  const [totalBadges, setTotalBadges] = useState(0);
-  const [maxBpm, setMaxBpm] = useState(80);
-
-  useEffect(() => {
-    loadStats();
-  }, [userId]);
-
-  const loadStats = async () => {
-    const stats = await getAllDailyStats(userId);
-    const tStars = stats.reduce((acc, curr) => acc + (curr.stars || 0), 0);
-    const tBadges = stats.reduce((acc, curr) => acc + (curr.badges || 0), 0);
-    const max = stats.reduce((acc, curr) => Math.max(acc, curr.highestBpm || 0), 80);
-    
-    setTotalStars(tStars);
-    setTotalBadges(tBadges);
-    setMaxBpm(max);
-  };
-
+const StatsPage: React.FC<StatsPageProps> = ({ userId, onBack, onStartRandomRhythm, totalStars, totalBadges, maxBpm }) => {
   return (
     <div className="p-6 max-w-2xl mx-auto bg-white rounded-2xl shadow-xl mt-10">
       <div className="flex justify-between items-center mb-8">

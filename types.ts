@@ -28,8 +28,6 @@ export interface DailyStats {
   badges?: number;
   highestBpm: number;
   totalAttempts?: number;
-  successCount?: number;
-  totalTime?: number;
 }
 
 export interface DBWordRecord {
