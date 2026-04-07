@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { WordData, DailyStats, GameStep, DBWordRecord, User } from './types';
-import { generateWordData, generateWordImage, validateWordInput } from './services/geminiService';
+import { generateWordData, generateWordImage, validateWordInput, regenerateWordData } from './services/geminiService';
 import { 
   initializeDatabase, 
   initializeUsers,
@@ -222,6 +222,9 @@ export default function App() {
   const [shadowingTranscript, setShadowingTranscript] = useState("");
   const [shadowingAttempts, setShadowingAttempts] = useState(0);
   const [hasPassedShadowing, setHasPassedShadowing] = useState(false);
+  const [showFeedbackModal, setShowFeedbackModal] = useState(false);
+  const [feedbackText, setFeedbackText] = useState("");
+  const [isFeedbackListening, setIsFeedbackListening] = useState(false);
 
   // Step 2 Listen State
   const [currentRootIndex, setCurrentRootIndex] = useState(0);
@@ -235,6 +238,8 @@ export default function App() {
   const [practiceTargetIndex, setPracticeTargetIndex] = useState(0);
   const [practiceOptions, setPracticeOptions] = useState<string[]>([]);
   const [practiceInput, setPracticeInput] = useState("");
+  const [applicationInput, setApplicationInput] = useState("");
+  const [isApplicationComplete, setIsApplicationComplete] = useState(false);
   const [orderedParts, setOrderedParts] = useState<string[]>([]);
   const [jumbledParts, setJumbledParts] = useState<string[]>([]);
   const [usedJumbledIndices, setUsedJumbledIndices] = useState<number[]>([]);
@@ -828,6 +833,46 @@ export default function App() {
     recognition.start();
   };
 
+  const handleFeedbackVoiceStart = () => {
+    if (!('webkitSpeechRecognition' in window)) {
+      alert("Speech recognition not supported on this browser.");
+      return;
+    }
+    const recognition = new (window as any).webkitSpeechRecognition();
+    recognition.lang = 'zh-CN';
+    recognition.interimResults = true;
+    recognition.onstart = () => setIsFeedbackListening(true);
+    recognition.onresult = (event: any) => {
+      const transcript = event.results[event.results.length - 1][0].transcript;
+      setFeedbackText(transcript);
+    };
+    recognition.onerror = () => setIsFeedbackListening(false);
+    recognition.onend = () => setIsFeedbackListening(false);
+    recognition.start();
+    recognitionRef.current = recognition;
+  };
+
+  const handleFeedbackSubmit = async () => {
+    if (!wordData || !currentUser || !feedbackText) return;
+    setIsLoading(true);
+    setShowFeedbackModal(false);
+    try {
+      const newData = await regenerateWordData(wordData, feedbackText);
+      setWordData(newData);
+      // Update DB
+      await saveWordToDB(currentUser.id, currentUser.username, newData, false);
+      // Refresh lists
+      const all = await getAllWords(currentUser.id);
+      setAllWordsList(all);
+      setFeedbackText("");
+    } catch (err) {
+      console.error("Failed to regenerate word data:", err);
+      alert("Failed to regenerate word data. Please try again.");
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
   const processWordInput = async (word: string, date?: string, mode: 'observe' | 'challenge' = 'observe') => {
     console.log("processWordInput called with:", word, "date:", date, "mode:", mode);
     if (!currentUser) {
@@ -964,7 +1009,7 @@ export default function App() {
       if (mode === 'challenge') {
           // Skip directly to test
           setStep(GameStep.STEP_4_TEST);
-          const parts = data.word.split('').map((char, i) => ({ id: `${char}-${i}`, val: char }));
+          const parts = data.word.toLowerCase().split('').map((char, i) => ({ id: `${char}-${i}`, val: char }));
           setTestBank(shuffleArray(parts));
           setTestSlots(new Array(parts.length).fill(null));
           setIsWrongAnimation(false);
@@ -1239,7 +1284,7 @@ export default function App() {
   const startStep4 = () => {
       setStep(GameStep.STEP_4_TEST);
       if (!wordData) return;
-      const parts = wordData.word.split('').map((char, i) => ({ id: `${char}-${i}`, val: char }));
+      const parts = wordData.word.toLowerCase().split('').map((char, i) => ({ id: `${char}-${i}`, val: char }));
       setTestBank(shuffleArray(parts));
       setTestSlots(new Array(parts.length).fill(null));
       setIsWrongAnimation(false);
@@ -1329,7 +1374,9 @@ export default function App() {
           }
 
           setIsRhythmSuccess(false);
-          setStep(GameStep.SUCCESS);
+          setApplicationInput("");
+          setIsApplicationComplete(false);
+          setStep(GameStep.STEP_4_APPLICATION);
       } else {
           playDissonance();
           setIsWrongAnimation(true);
@@ -1913,6 +1960,16 @@ export default function App() {
                 </svg>
               )}
             </button>
+            <button
+              onClick={() => setShowFeedbackModal(true)}
+              className="absolute top-4 left-28 w-10 h-10 bg-white/80 hover:bg-white rounded-full shadow-sm flex items-center justify-center text-gray-500 hover:text-blue-500 transition-all backdrop-blur-sm z-10"
+              title="Feedback / Correct Data"
+              disabled={isLoading}
+            >
+              <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" />
+              </svg>
+            </button>
             <div className="absolute top-4 right-4 z-10">
               <SpeakerButton onClick={() => speak(wordData.word)} />
             </div>
@@ -2294,6 +2351,122 @@ export default function App() {
     );
   };
 
+  useEffect(() => {
+    if (step === GameStep.STEP_4_APPLICATION && wordData) {
+      setTimeout(() => {
+        speak(wordData.sentence);
+      }, 500);
+    }
+  }, [step, wordData]);
+
+  const handleApplicationSubmit = () => {
+    if (!wordData || isApplicationComplete) return;
+    if (applicationInput.toLowerCase().trim() === wordData.word.toLowerCase().trim()) {
+      playWinSound();
+      setIsApplicationComplete(true);
+      speak(wordData.sentence);
+    } else {
+      playDissonance();
+      setIsWrongAnimation(true);
+      setTimeout(() => setIsWrongAnimation(false), 500);
+    }
+  };
+
+  const renderApplication = () => {
+    if (!wordData) return null;
+    
+    // Split sentence by word (case insensitive) to style the target word differently
+    const parts = wordData.sentence.split(new RegExp(`(\\b${wordData.word}\\b)`, 'gi'));
+    
+    return (
+      <div className="flex flex-col items-center justify-center min-h-[60vh] gap-8 p-6 animate-fade-in text-center">
+        <div className="space-y-6 w-full max-w-lg">
+          <div className="text-6xl animate-pulse">{isApplicationComplete ? '🌟' : '🎧'}</div>
+          <h2 className="text-3xl font-black text-blue-600">
+            {isApplicationComplete ? 'Perfect Application!' : 'Application Step'}
+          </h2>
+          <p className="text-blue-400 font-bold uppercase tracking-widest text-xs">
+            {isApplicationComplete ? 'Well done! Listen to the full sentence.' : 'Listen to the sentence and fill in the blank'}
+          </p>
+          
+          <div 
+            className={`bg-white p-8 rounded-[2.5rem] shadow-xl border-4 transition-all group cursor-pointer hover:bg-blue-50 ${
+              isApplicationComplete ? 'border-blue-400 scale-105' : 'border-blue-50'
+            }`}
+            onClick={() => speak(wordData.sentence)}
+          >
+            <div className="flex items-center justify-center gap-4 mb-6">
+              <div className={`${isApplicationComplete ? 'bg-orange-100' : 'bg-blue-100'} p-3 rounded-full group-hover:scale-110 transition-transform`}>
+                <svg className={`w-8 h-8 ${isApplicationComplete ? 'text-orange-500' : 'text-blue-500'}`} fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2.5" d="M15.536 8.464a5 5 0 010 7.072m2.828-9.9a9 9 0 010 12.728M5.586 15H4a1 1 0 01-1-1v-4a1 1 0 011-1h1.586l4.707-4.707C10.923 3.663 12 4.109 12 5v14c0 .891-1.077 1.337-1.707.707L5.586 15z" />
+                </svg>
+              </div>
+              <span className={`${isApplicationComplete ? 'text-orange-400' : 'text-blue-400'} font-black uppercase tracking-widest text-sm`}>
+                {isApplicationComplete ? 'Tap to Replay' : 'Tap to Listen'}
+              </span>
+            </div>
+            
+            <div className={`text-2xl font-black leading-relaxed italic flex flex-wrap justify-center items-center gap-x-2 ${isApplicationComplete ? 'text-blue-700' : 'text-gray-800'}`}>
+              <span>"</span>
+              {parts.map((part, i) => {
+                if (part.toLowerCase() === wordData.word.toLowerCase()) {
+                  if (isApplicationComplete) {
+                    return (
+                      <span 
+                        key={i} 
+                        className="bg-orange-100 text-orange-700 px-3 py-1 rounded-xl border-b-4 border-orange-200 animate-bounce-in cursor-pointer hover:scale-110 transition-transform"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          speak(part);
+                        }}
+                      >
+                        {part}
+                      </span>
+                    );
+                  } else {
+                    return (
+                      <span key={i} className="inline-block w-24 h-8 bg-blue-50 border-b-4 border-dashed border-blue-200 rounded-lg animate-pulse"></span>
+                    );
+                  }
+                }
+                return <span key={i}>{part}</span>;
+              })}
+              <span>"</span>
+            </div>
+          </div>
+
+          <div className="flex flex-col gap-4 w-full">
+            <input
+              type="text"
+              value={applicationInput}
+              disabled={isApplicationComplete}
+              onChange={(e) => setApplicationInput(e.target.value)}
+              onKeyDown={(e) => e.key === 'Enter' && (isApplicationComplete ? setStep(GameStep.SUCCESS) : handleApplicationSubmit())}
+              className={`w-full text-center text-3xl font-bold py-6 rounded-3xl border-4 outline-none shadow-sm transition-all ${
+                isApplicationComplete 
+                  ? 'border-blue-400 bg-blue-50 text-blue-700' 
+                  : isWrongAnimation 
+                    ? 'border-red-400 bg-red-50 animate-shake' 
+                    : 'border-blue-200 focus:border-blue-500 text-gray-700'
+              }`}
+              placeholder={isApplicationComplete ? "Correct!" : "Type the word..."}
+              autoFocus
+            />
+            {isApplicationComplete ? (
+              <GameButton onClick={() => setStep(GameStep.SUCCESS)} color="yellow" fullWidth className="text-xl py-6 shadow-[0_10px_0_rgb(202,138,4)] active:shadow-none active:translate-y-2 animate-bounce-in">
+                Finish ✨
+              </GameButton>
+            ) : (
+              <GameButton onClick={handleApplicationSubmit} color="blue" fullWidth className="text-xl py-4 shadow-[0_8px_0_rgb(29,78,216)] active:shadow-none active:translate-y-2">
+                Check ✨
+              </GameButton>
+            )}
+          </div>
+        </div>
+      </div>
+    );
+  };
+
   const renderRhythmIntro = () => {
       const targetDate = challengeDate || new Date().toDateString();
       const isToday = targetDate === new Date().toDateString();
@@ -2429,10 +2602,10 @@ export default function App() {
           
           <div className="bg-white p-8 rounded-[2.5rem] shadow-xl border-4 border-green-100 w-full max-w-sm relative overflow-hidden">
               <div className="absolute top-0 left-0 w-full h-1 bg-green-400"></div>
-              <h3 className="text-4xl font-black text-blue-600 mb-2 tracking-tight">{wordData?.word}</h3>
+              <h3 className="text-4xl font-black text-blue-600 mb-2 tracking-tight">{wordData?.word.toLowerCase()}</h3>
               <div className="flex justify-center items-center gap-3">
                   {wordData?.partOfSpeech && (
-                      <span className="bg-blue-50 text-blue-500 px-3 py-1 rounded-full text-xs font-black uppercase tracking-widest">{wordData.partOfSpeech}</span>
+                      <span className="bg-blue-50 text-blue-500 px-3 py-1 rounded-full text-xs font-black lowercase tracking-widest">{wordData.partOfSpeech.toLowerCase()}</span>
                   )}
                   {wordData?.translation && (
                       <span className="text-gray-400 text-lg font-bold">{wordData.translation}</span>
@@ -2650,9 +2823,64 @@ export default function App() {
         {step === GameStep.HOME && renderHome()}
         {step === GameStep.INPUT_WORD && renderInputWord()}
         {step === GameStep.STEP_1_OBSERVE && renderObserve()}
+
+        {/* --- FEEDBACK MODAL --- */}
+        {showFeedbackModal && (
+          <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-black/40 backdrop-blur-sm animate-fade-in">
+            <div className="bg-white rounded-[32px] w-full max-w-md p-8 shadow-2xl animate-scale-in border-b-8 border-gray-100">
+              <div className="flex items-center justify-between mb-6">
+                <h3 className="text-2xl font-black text-gray-800">Correct Data 🛠️</h3>
+                <button onClick={() => setShowFeedbackModal(false)} className="text-gray-400 hover:text-gray-600">
+                  <svg className="w-6 h-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={3} d="M6 18L18 6M6 6l12 12" />
+                  </svg>
+                </button>
+              </div>
+
+              <p className="text-gray-500 font-bold mb-6 leading-tight">
+                Tell us what's wrong (e.g. "Chinese translation is wrong", "Syllables are incorrect") and we'll fix it! (Supports Chinese feedback)
+              </p>
+
+              <div className="relative mb-6">
+                <textarea
+                  value={feedbackText}
+                  onChange={(e) => setFeedbackText(e.target.value)}
+                  placeholder="Describe the issue in English or Chinese... / 请输入修正建议..."
+                  className="w-full h-32 p-4 bg-gray-50 rounded-2xl border-4 border-transparent focus:border-blue-100 outline-none font-bold text-gray-700 resize-none transition-all"
+                />
+                <div className="absolute right-3 bottom-3">
+                  <MicrophoneButton 
+                    isListening={isFeedbackListening} 
+                    onStart={handleFeedbackVoiceStart} 
+                    onStop={() => recognitionRef.current?.stop()} 
+                    size="sm"
+                  />
+                </div>
+              </div>
+
+              <div className="flex gap-3">
+                <button
+                  onClick={() => setShowFeedbackModal(false)}
+                  className="flex-1 py-4 bg-gray-100 text-gray-500 font-black rounded-2xl hover:bg-gray-200 transition-all uppercase tracking-widest text-xs"
+                >
+                  Cancel
+                </button>
+                <button
+                  onClick={handleFeedbackSubmit}
+                  disabled={!feedbackText || isLoading}
+                  className="flex-2 py-4 bg-blue-500 text-white font-black rounded-2xl shadow-[0_6px_0_rgb(29,78,216)] active:shadow-none active:translate-y-1 transition-all uppercase tracking-widest text-xs disabled:opacity-50 disabled:shadow-none disabled:translate-y-0"
+                >
+                  {isLoading ? 'Fixing...' : 'Fix it! 🚀'}
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
+
         {step === GameStep.STEP_2_LISTEN && renderListen()}
         {step === GameStep.STEP_3_PRACTICE && renderPractice()}
         {step === GameStep.STEP_4_TEST && renderTest()}
+        {step === GameStep.STEP_4_APPLICATION && renderApplication()}
         {step === GameStep.SUCCESS && renderSuccess()}
         {step === GameStep.FAIL && renderFail()}
         {step === GameStep.STATS && renderStatsView()}
@@ -2756,7 +2984,7 @@ export default function App() {
                   try {
                     const count = await importDatabaseFromJson(currentUser!.id, currentUser!.username, importPending.data, importOverwrite, importPending.type || 'words');
                     setImportPending(null);
-                    alert(`Successfully imported ${importPending.type === 'account' ? 'account data' : count + ' words'}!`);
+                    alert(`Successfully imported ${count} words${importPending.type === 'account' ? ' and account data' : ''}!`);
                     // Reload current user data
                     const users = await getAllUsers();
                     setAllUsers(users);

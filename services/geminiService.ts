@@ -214,6 +214,65 @@ export const generateWordData = async (word: string): Promise<WordData> => {
   });
 };
 
+export const regenerateWordData = async (originalData: WordData, feedback: string): Promise<WordData> => {
+  const apiKey = getApiKey();
+  if (!apiKey) {
+    throw new Error("API key is missing. Please set GEMINI_API_KEY in Settings > Secrets.");
+  }
+  const ai = new GoogleGenAI({ apiKey });
+  return withRetry(async () => {
+    const model = 'gemini-3-flash-preview';
+    
+    const response = await ai.models.generateContent({
+      model,
+      contents: `Regenerate data for the word: "${originalData.word}" based on user feedback: "${feedback}". 
+      Original data provided for reference: ${JSON.stringify(originalData)}`,
+      config: {
+        systemInstruction: `You are an expert English vocabulary teacher for elementary students.
+        The user provided feedback on the previously generated data. The feedback may be in English or Chinese.
+        Please correct the data based on the feedback while still following the original rules for "parts" and "partsPronunciation".
+        
+        Original Rules Summary:
+        1. "parts": Break the word into Spelling Chunks (Right-to-Left analysis).
+        2. "partsPronunciation": Simple English strings for TTS.
+        3. "partOfSpeech": The part of speech abbreviation (e.g., "n.", "v.", "adj.", "adv.").
+        4. "root": A very simple memory aid or mnemonic for kids.
+        5. "phonetic": Standard US English IPA.
+        6. "translation": The Chinese translation of the word.
+        7. "sentence": Simple example sentence.
+        8. "phrases": List 3 short, simple, and common phrases/collocations using this word (max 3-4 words each).
+        9. "relatedWords": List of 3 English words that share similar spelling patterns, roots, or are compound words containing this word.
+        
+        Feedback to address (may be in Chinese): "${feedback}"`,
+        responseMimeType: "application/json",
+        responseSchema: {
+          type: Type.OBJECT,
+          properties: {
+            word: { type: Type.STRING },
+            partOfSpeech: { type: Type.STRING },
+            parts: { type: Type.ARRAY, items: { type: Type.STRING } },
+            partsPronunciation: { type: Type.ARRAY, items: { type: Type.STRING } },
+            root: { type: Type.STRING },
+            phonetic: { type: Type.STRING },
+            translation: { type: Type.STRING },
+            sentence: { type: Type.STRING },
+            phrases: { type: Type.ARRAY, items: { type: Type.STRING } },
+            relatedWords: { type: Type.ARRAY, items: { type: Type.STRING } }
+          },
+          required: ["word", "partOfSpeech", "parts", "partsPronunciation", "root", "phonetic", "translation", "sentence", "phrases", "relatedWords"]
+        },
+        maxOutputTokens: 2048,
+        thinkingConfig: { thinkingLevel: ThinkingLevel.LOW }
+      }
+    });
+    
+    const jsonStr = cleanJsonString(response.text || "{}");
+    const newData = JSON.parse(jsonStr) as WordData;
+    // Ensure imageUrl is preserved
+    return { ...newData, imageUrl: originalData.imageUrl };
+  });
+};
+
 export const generateWordImage = async (word: string): Promise<string> => {
   const apiKey = getApiKey();
   if (!apiKey) {

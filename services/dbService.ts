@@ -73,21 +73,23 @@ export const migrateWordDataSchema = async (): Promise<void> => {
                 const data = record.data as any;
                 let changed = false;
 
-                // Case 1: Old schema where translation was English and chineseTranslation was Chinese
-                // We want: translation = Chinese
-                if (data.chineseTranslation) {
-                    const oldChinese = data.chineseTranslation; // Chinese
-                    
-                    data.translation = oldChinese;
-                    delete data.chineseTranslation;
-                    changed = true;
-                } 
-                // Case 2: translation is likely English (contains ASCII only)
-                else if (data.translation) {
-                    const isLikelyEnglish = /^[a-zA-Z0-9\s.,!?'"()-]+$/.test(data.translation);
-                    if (isLikelyEnglish) {
-                        data.translation = ""; // Mark as missing Chinese so it can be fixed later or ignored
+                if (data) {
+                    // Case 1: Old schema where translation was English and chineseTranslation was Chinese
+                    // We want: translation = Chinese
+                    if (data.chineseTranslation) {
+                        const oldChinese = data.chineseTranslation; // Chinese
+                        
+                        data.translation = oldChinese;
+                        delete data.chineseTranslation;
                         changed = true;
+                    } 
+                    // Case 2: translation is likely English (contains ASCII only)
+                    else if (data.translation) {
+                        const isLikelyEnglish = /^[a-zA-Z0-9\s.,!?'"()-]+$/.test(data.translation);
+                        if (isLikelyEnglish) {
+                            data.translation = ""; // Mark as missing Chinese so it can be fixed later or ignored
+                            changed = true;
+                        }
                     }
                 }
 
@@ -765,7 +767,7 @@ export const importDatabaseFromJson = async (userId: string, currentUsername: st
             }
 
             // Import Words
-            if (importType === 'words' && data!.words) {
+            if (data!.words) {
                 data!.words.forEach(w => {
                     w.userId = userId; // Force it to current user
                     if (overwrite) {
