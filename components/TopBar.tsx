@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import * as React from 'react';
 import { DailyStats, User } from '../types';
 
 interface TopBarProps {
@@ -16,10 +16,10 @@ interface TopBarProps {
 }
 
 const TopBar: React.FC<TopBarProps> = ({ stats, totalStars, totalBadges, darkMode = false, currentUser, allUsers, onSwitchUser, onCreateUser, onManageUsers, onExportAccount, onImportAccount }) => {
-  const [isMenuOpen, setIsMenuOpen] = useState(false);
-  const [isCreating, setIsCreating] = useState(false);
-  const [newUserName, setNewUserName] = useState("");
-  const [newUserPassword, setNewUserPassword] = useState("");
+  const [isMenuOpen, setIsMenuOpen] = React.useState(false);
+  const [isCreating, setIsCreating] = React.useState(false);
+  const [newUserName, setNewUserName] = React.useState("");
+  const [newUserPassword, setNewUserPassword] = React.useState("");
 
   const handleCreateSubmit = async (e: React.FormEvent) => {
     e.preventDefault();

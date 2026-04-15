@@ -1,4 +1,5 @@
-import React, { useState, useEffect, useRef } from 'react';
+import * as React from 'react';
+import { Component, ReactNode, ErrorInfo } from 'react';
 import { WordData, DailyStats, GameStep, DBWordRecord, User } from './types';
 import { generateWordData, generateWordImage, validateWordInput, regenerateWordData } from './services/geminiService';
 import { 
@@ -34,6 +35,58 @@ import { NoWordsModal } from './src/components/NoWordsModal';
 import LibraryPage from './pages/LibraryPage';
 import StatsPage from './pages/StatsPage';
 
+// --- ERROR BOUNDARY ---
+interface ErrorBoundaryProps {
+  children: ReactNode;
+}
+
+interface ErrorBoundaryState {
+  hasError: boolean;
+  error: Error | null;
+}
+
+class ErrorBoundary extends Component<ErrorBoundaryProps, ErrorBoundaryState> {
+  state: ErrorBoundaryState = { hasError: false, error: null };
+
+  static getDerivedStateFromError(error: Error): ErrorBoundaryState {
+    return { hasError: true, error };
+  }
+
+  componentDidCatch(error: Error, errorInfo: ErrorInfo) {
+    console.error("Uncaught error:", error, errorInfo);
+  }
+
+  render() {
+    if (this.state.hasError) {
+      return (
+        <div className="min-h-screen bg-slate-50 flex flex-col items-center justify-center p-6 text-center">
+          <div className="bg-white p-8 rounded-[2.5rem] shadow-xl border-4 border-red-100 max-w-md w-full space-y-6">
+            <div className="text-6xl">⚠️</div>
+            <h1 className="text-2xl font-black text-slate-800">Something went wrong</h1>
+            <p className="text-slate-500 font-medium">
+              We encountered an unexpected error. Don't worry, your progress is safe!
+            </p>
+            <div className="bg-red-50 p-4 rounded-2xl text-left overflow-auto max-h-32">
+              <code className="text-xs text-red-600 font-mono">
+                {this.state.error?.message || "Unknown error"}
+              </code>
+            </div>
+            <GameButton 
+              onClick={() => window.location.reload()} 
+              color="blue" 
+              fullWidth
+            >
+              Reload App 🔄
+            </GameButton>
+          </div>
+        </div>
+      );
+    }
+
+    return (this as any).props.children;
+  }
+}
+
 // Helper Components
 const SpeakerButton: React.FC<{ onClick: () => void }> = ({ onClick }) => (
   <button onClick={onClick} className="p-3 bg-white rounded-full shadow-md text-blue-500 hover:scale-110 transition-transform">
@@ -49,8 +102,8 @@ const SentenceHighlighter: React.FC<{ sentence: string; wordToHighlight: string 
   return (
     <span>
       {parts.map((part, i) => 
-        part.toLowerCase() === wordToHighlight.toLowerCase() ? 
-        <span key={i} className="text-blue-600 font-black bg-blue-100 px-1 rounded mx-0.5">{part}</span> : 
+        part && wordToHighlight && part.toLowerCase() === wordToHighlight.toLowerCase() ? 
+        <span key={i} className="text-blue-600 font-black bg-blue-100 px-1 rounded mx-0.5">{part.toLowerCase()}</span> : 
         part
       )}
     </span>
@@ -85,11 +138,11 @@ const levenshtein = (a: string, b: string): number => {
 
 // Robust matching function
 const isFuzzyMatch = (input: string, targets: string[]): boolean => {
-    const cleanInput = input.toLowerCase().replace(/[^a-z0-9]/g, '');
+    const cleanInput = (input || '').toLowerCase().replace(/[^a-z0-9]/g, '');
     if (!cleanInput) return false;
 
     return targets.some(target => {
-        const cleanTarget = target.toLowerCase().replace(/[^a-z0-9]/g, '');
+        const cleanTarget = (target || '').toLowerCase().replace(/[^a-z0-9]/g, '');
         
         // 1. Direct includes (Context match)
         if (cleanInput.includes(cleanTarget)) return true;
@@ -115,7 +168,7 @@ const shuffleArray = <T,>(array: T[]): T[] => {
   return [...array].sort(() => Math.random() - 0.5);
 };
 
-const isVowel = (char: string) => ['a','e','i','o','u','y'].includes(char.toLowerCase());
+const isVowel = (char: string) => char && ['a','e','i','o','u','y'].includes(char.toLowerCase());
 
 const speak = (text: string) => {
   if ('speechSynthesis' in window) {
@@ -169,10 +222,18 @@ interface Tile {
   val: string;
 }
 
-export default function App() {
-  const [alertMessage, setAlertMessage] = useState<string | null>(null);
+export default function AppWrapper() {
+  return (
+    <ErrorBoundary>
+      <App />
+    </ErrorBoundary>
+  );
+}
 
-  useEffect(() => {
+function App() {
+  const [alertMessage, setAlertMessage] = React.useState<string | null>(null);
+
+  React.useEffect(() => {
     const originalAlert = window.alert;
     window.alert = (msg: any) => {
       setAlertMessage(String(msg));
@@ -183,14 +244,14 @@ export default function App() {
   }, []);
 
   // Global App State
-  const [step, setStep] = useState<GameStep>(GameStep.HOME);
-  const [isInitialized, setIsInitialized] = useState(false);
+  const [step, setStep] = React.useState<GameStep>(GameStep.HOME);
+  const [isInitialized, setIsInitialized] = React.useState(false);
   
   // User Management State
-  const [currentUser, setCurrentUser] = useState<User | null>(null);
-  const [allUsers, setAllUsers] = useState<User[]>([]);
+  const [currentUser, setCurrentUser] = React.useState<User | null>(null);
+  const [allUsers, setAllUsers] = React.useState<User[]>([]);
 
-  const [stats, setStats] = useState<DailyStats>({
+  const [stats, setStats] = React.useState<DailyStats>({
     userId: '',
     date: new Date().toDateString(),
     stars: 0,
@@ -198,78 +259,79 @@ export default function App() {
     highestBpm: 0,
     totalAttempts: 0
   });
-  const [allWordsList, setAllWordsList] = useState<DBWordRecord[]>([]);
-  const [reviewQueue, setReviewQueue] = useState<DBWordRecord[]>([]);
-  const [todaysWordsCount, setTodaysWordsCount] = useState(0);
+  const [allWordsList, setAllWordsList] = React.useState<DBWordRecord[]>([]);
+  const [reviewQueue, setReviewQueue] = React.useState<DBWordRecord[]>([]);
+  const [todaysWordsCount, setTodaysWordsCount] = React.useState(0);
 
-  const [viewingMonth, setViewingMonth] = useState<Date>(new Date());
-  const [practiceDate, setPracticeDate] = useState<string | null>(null);
-  const [allDailyStats, setAllDailyStats] = useState<DailyStats[]>([]);
-  const [importPending, setImportPending] = useState<{ file: File, data: any, type?: 'words' | 'account' } | null>(null);
-  const [importOverwrite, setImportOverwrite] = useState(false);
+  const [viewingMonth, setViewingMonth] = React.useState<Date>(new Date());
+  const [practiceDate, setPracticeDate] = React.useState<string | null>(null);
+  const [allDailyStats, setAllDailyStats] = React.useState<DailyStats[]>([]);
+  const [importPending, setImportPending] = React.useState<{ file: File, data: any, type?: 'words' | 'account' } | null>(null);
+  const [importOverwrite, setImportOverwrite] = React.useState(false);
 
   // Current Word Session State
-  const [wordData, setWordData] = useState<WordData | null>(null);
-  const [wordImage, setWordImage] = useState<string>("");
-  const [isLoading, setIsLoading] = useState(false);
+  const [wordData, setWordData] = React.useState<WordData | null>(null);
+  const [wordImage, setWordImage] = React.useState<string>("");
+  const [isLoading, setIsLoading] = React.useState(false);
   
   // Input Step State
-  const [inputTranscript, setInputTranscript] = useState("");
-  const [isListening, setIsListening] = useState(false);
+  const [inputTranscript, setInputTranscript] = React.useState("");
+  const [isListening, setIsListening] = React.useState(false);
 
   // Step 1 Observe State
-  const [activePartHighlight, setActivePartHighlight] = useState<number | null>(null);
-  const [shadowingTranscript, setShadowingTranscript] = useState("");
-  const [shadowingAttempts, setShadowingAttempts] = useState(0);
-  const [hasPassedShadowing, setHasPassedShadowing] = useState(false);
-  const [showFeedbackModal, setShowFeedbackModal] = useState(false);
-  const [feedbackText, setFeedbackText] = useState("");
-  const [isFeedbackListening, setIsFeedbackListening] = useState(false);
+  const [activePartHighlight, setActivePartHighlight] = React.useState<number | null>(null);
+  const [shadowingTranscript, setShadowingTranscript] = React.useState("");
+  const [shadowingAttempts, setShadowingAttempts] = React.useState(0);
+  const [hasPassedShadowing, setHasPassedShadowing] = React.useState(false);
+  const [showFeedbackModal, setShowFeedbackModal] = React.useState(false);
+  const [feedbackText, setFeedbackText] = React.useState("");
+  const [isFeedbackListening, setIsFeedbackListening] = React.useState(false);
 
   // Step 2 Listen State
-  const [currentRootIndex, setCurrentRootIndex] = useState(0);
-  const [step2FailCount, setStep2FailCount] = useState(0);
-  const [step2Error, setStep2Error] = useState<string | null>(null);
+  const [currentRootIndex, setCurrentRootIndex] = React.useState(0);
+  const [step2FailCount, setStep2FailCount] = React.useState(0);
+  const [step2Error, setStep2Error] = React.useState<string | null>(null);
 
   // Step 3 Practice State
-  const [practicePhase, setPracticePhase] = useState<'CHOICE'|'FILL'|'ORDER'>('CHOICE');
-  const [practiceSuccess, setPracticeSuccess] = useState(false);
-  const [isRhythmSuccess, setIsRhythmSuccess] = useState(false);
-  const [practiceTargetIndex, setPracticeTargetIndex] = useState(0);
-  const [practiceOptions, setPracticeOptions] = useState<string[]>([]);
-  const [practiceInput, setPracticeInput] = useState("");
-  const [applicationInput, setApplicationInput] = useState("");
-  const [isApplicationComplete, setIsApplicationComplete] = useState(false);
-  const [orderedParts, setOrderedParts] = useState<string[]>([]);
-  const [jumbledParts, setJumbledParts] = useState<string[]>([]);
-  const [usedJumbledIndices, setUsedJumbledIndices] = useState<number[]>([]);
+  const [practicePhase, setPracticePhase] = React.useState<'CHOICE'|'FILL'|'ORDER'>('CHOICE');
+  const [practiceSuccess, setPracticeSuccess] = React.useState(false);
+  const [isRhythmSuccess, setIsRhythmSuccess] = React.useState(false);
+  const [practiceTargetIndex, setPracticeTargetIndex] = React.useState(0);
+  const [practiceOptions, setPracticeOptions] = React.useState<string[]>([]);
+  const [practiceInput, setPracticeInput] = React.useState("");
+  const [applicationInput, setApplicationInput] = React.useState("");
+  const [isApplicationComplete, setIsApplicationComplete] = React.useState(false);
+  const [orderedParts, setOrderedParts] = React.useState<string[]>([]);
+  const [jumbledParts, setJumbledParts] = React.useState<string[]>([]);
+  const [usedJumbledIndices, setUsedJumbledIndices] = React.useState<number[]>([]);
 
   // Step 4 Test State
-  const [testSlots, setTestSlots] = useState<(Tile|null)[]>([]);
-  const [testBank, setTestBank] = useState<Tile[]>([]);
-  const [isWrongAnimation, setIsWrongAnimation] = useState(false);
+  const [testSlots, setTestSlots] = React.useState<(Tile|null)[]>([]);
+  const [testBank, setTestBank] = React.useState<Tile[]>([]);
+  const [isWrongAnimation, setIsWrongAnimation] = React.useState(false);
 
   // Rhythm Game State
-  const [isDailyChallenge, setIsDailyChallenge] = useState(false);
-  const [challengeDate, setChallengeDate] = useState<string | null>(null);
-  const [rhythmPhase, setRhythmPhase] = useState<'WAITING'|'PLAYING'|'WORD_COMPLETE'>('WAITING');
-  const [rhythmWordIndex, setRhythmWordIndex] = useState(0);
-  const [rhythmPartIndex, setRhythmPartIndex] = useState(0);
-  const [rhythmCombo, setRhythmCombo] = useState(0);
-  const [rhythmQueue, setRhythmQueue] = useState<WordData[]>([]);
-  const [rhythmFallingOptions, setRhythmFallingOptions] = useState<string[]>([]);
-  const [rhythmShake, setRhythmShake] = useState(false);
+  const [isDailyChallenge, setIsDailyChallenge] = React.useState(false);
+  const [challengeDate, setChallengeDate] = React.useState<string | null>(null);
+  const [rhythmPhase, setRhythmPhase] = React.useState<'WAITING'|'PLAYING'|'WORD_COMPLETE'>('WAITING');
+  const [rhythmWordIndex, setRhythmWordIndex] = React.useState(0);
+  const [rhythmPartIndex, setRhythmPartIndex] = React.useState(0);
+  const [rhythmCombo, setRhythmCombo] = React.useState(0);
+  const [rhythmQueue, setRhythmQueue] = React.useState<WordData[]>([]);
+  const [rhythmFallingOptions, setRhythmFallingOptions] = React.useState<string[]>([]);
+  const [rhythmShake, setRhythmShake] = React.useState(false);
   
-  const rhythmTimeoutRef = useRef<any | null>(null);
-  const recognitionRef = useRef<any>(null);
-  const startTimeRef = useRef<number>(0);
-  const currentBPMRef = useRef<number>(80);
+  const rhythmTimeoutRef = React.useRef<any | null>(null);
+  const recognitionRef = React.useRef<any>(null);
+  const startTimeRef = React.useRef<number>(0);
+  const currentBPMRef = React.useRef<number>(80);
+  const inputRef = React.useRef<HTMLInputElement>(null);
 
   // Data Version for forcing re-renders of child pages
-  const [dataVersion, setDataVersion] = useState(0);
+  const [dataVersion, setDataVersion] = React.useState(0);
 
   // Initialization: Load User -> Then Load DB for that User
-  useEffect(() => {
+  React.useEffect(() => {
     const initApp = async () => {
       try {
         // 1. Initialize Users (this creates the default user if none exists)
@@ -306,14 +368,14 @@ export default function App() {
   }, []);
 
   // Effect: Speak whole word when practice phase succeeds
-  useEffect(() => {
+  React.useEffect(() => {
       if (practiceSuccess && wordData) {
           setTimeout(() => speak(wordData.word), 500);
       }
   }, [practiceSuccess, wordData]);
 
   // Screen Wake Lock API to prevent phone sleeping during voice input
-  useEffect(() => {
+  React.useEffect(() => {
     let wakeLock: any = null;
 
     const requestWakeLock = async () => {
@@ -350,7 +412,7 @@ export default function App() {
   }, []);
 
   // Effect: When User changes, reload all data
-  useEffect(() => {
+  React.useEffect(() => {
       if (!isInitialized) return;
       if (currentUser) {
           localStorage.setItem('starSpellerUserId', currentUser.id);
@@ -369,8 +431,8 @@ export default function App() {
       }
   }, [currentUser]);
 
-  const [totalStars, setTotalStars] = useState(0);
-  const [totalBadges, setTotalBadges] = useState(0);
+  const [totalStars, setTotalStars] = React.useState(0);
+  const [totalBadges, setTotalBadges] = React.useState(0);
 
   const overallStats = React.useMemo(() => {
     const tStars = allDailyStats.reduce((acc, curr) => acc + (curr.stars || 0), 0);
@@ -412,7 +474,7 @@ export default function App() {
       }
   };
 
-  useEffect(() => {
+  React.useEffect(() => {
       if (!currentUser || !viewingMonth) return;
       const monthStr = viewingMonth.getMonth();
       const yearStr = viewingMonth.getFullYear();
@@ -429,13 +491,13 @@ export default function App() {
       setTotalBadges(mBadges);
   }, [allDailyStats, viewingMonth, currentUser]);
 
-  const [loginUsername, setLoginUsername] = useState("");
-  const [loginPassword, setLoginPassword] = useState("");
-  const [showLoginPassword, setShowLoginPassword] = useState(false);
-  const [isManagingUsers, setIsManagingUsers] = useState(false);
-  const [showNoWordsModal, setShowNoWordsModal] = useState(false);
-  const [validationError, setValidationError] = useState<string | null>(null);
-  const [manageUserPasswords, setManageUserPasswords] = useState<Record<string, string>>({});
+  const [loginUsername, setLoginUsername] = React.useState("");
+  const [loginPassword, setLoginPassword] = React.useState("");
+  const [showLoginPassword, setShowLoginPassword] = React.useState(false);
+  const [isManagingUsers, setIsManagingUsers] = React.useState(false);
+  const [showNoWordsModal, setShowNoWordsModal] = React.useState(false);
+  const [validationError, setValidationError] = React.useState<string | null>(null);
+  const [manageUserPasswords, setManageUserPasswords] = React.useState<Record<string, string>>({});
 
   const handleCreateUser = async (name: string, password?: string) => {
       const trimmedName = name.trim();
@@ -508,7 +570,7 @@ export default function App() {
       const usersList = await getAllUsers();
       setAllUsers(usersList);
 
-      const user = usersList.find(u => u.username.toLowerCase() === trimmedName.toLowerCase());
+      const user = usersList.find(u => (u.username?.toLowerCase() || '') === trimmedName.toLowerCase());
       if (user) {
           // Default all users to '123' if no password is set, to match user expectation
           const expectedPassword = user.password || '123';
@@ -629,12 +691,12 @@ export default function App() {
       if (!currentUser) return;
       
       // OPTIMISTIC UPDATE: Remove immediately from all lists without waiting or asking
-      const lowerWord = word.toLowerCase();
+      const lowerWord = word?.toLowerCase() || '';
       const targetDate = practiceDate || new Date().toDateString();
       
       setAllWordsList(prev => {
           return prev.map(w => {
-              if (w.word.toLowerCase() === lowerWord) {
+              if (w.word?.toLowerCase() === lowerWord) {
                   if (w.datesAdded && w.datesAdded.length > 1) {
                       return { ...w, datesAdded: w.datesAdded.filter(d => d !== targetDate) };
                   }
@@ -644,11 +706,11 @@ export default function App() {
           }).filter(Boolean) as DBWordRecord[];
       });
       
-      setReviewQueue(prev => prev.filter(w => w.word.toLowerCase() !== lowerWord));
+      setReviewQueue(prev => prev.filter(w => w.word?.toLowerCase() !== lowerWord));
       
       // Also update rhythm queue and the count
       setRhythmQueue(prev => {
-          const newQ = prev.filter(w => w.word.toLowerCase() !== lowerWord);
+          const newQ = prev.filter(w => w.word?.toLowerCase() !== lowerWord);
           if (newQ.length !== prev.length) {
               setTodaysWordsCount(newQ.length);
           }
@@ -667,26 +729,125 @@ export default function App() {
   };
 
   // --- HELPER: Pronunciation ---
+  const getRootPronunciation = (data: WordData) => {
+    return data.root;
+  };
+
   const getPartPronunciation = (data: WordData, index: number) => {
     // Client-side overrides for known problematic pronunciations
-    if (data.word.toLowerCase() === 'kangaroo') {
+    const word = data.word?.toLowerCase() || '';
+    const part = data.parts[index]?.toLowerCase() || '';
+
+    if (word === 'kangaroo') {
       const overrides = ['kang', 'guh', 'roo'];
       if (index < overrides.length) return overrides[index];
     }
-    if (data.word.toLowerCase() === 'penguin') {
+    if (word === 'penguin') {
       const overrides = ['pen', 'gwin'];
       if (index < overrides.length) return overrides[index];
     }
-    if (data.word.toLowerCase() === 'bird') {
-      return 'bird';
+    if (word === 'bird') return 'bird';
+    if (word === 'shirt') return 'shirt';
+    if (word === 'fireman') {
+      const overrides = ['fire', 'mun'];
+      if (index < overrides.length) return overrides[index];
     }
-    if (data.word.toLowerCase() === 'shirt') {
-      return 'shirt';
+    if (word === 'beautiful') {
+      const overrides = ['byou', 'tih', 'full'];
+      if (index < overrides.length) return overrides[index];
+    }
+    if (word === 'dinosaur') {
+      const overrides = ['die', 'noh', 'sore'];
+      if (index < overrides.length) return overrides[index];
+    }
+    if (word === 'elephant') {
+      const overrides = ['eh', 'luh', 'funt'];
+      if (index < overrides.length) return overrides[index];
+    }
+    if (word === 'computer') {
+      const overrides = ['kum', 'pyou', 'tur'];
+      if (index < overrides.length) return overrides[index];
+    }
+    if (word === 'education') {
+      const overrides = ['eh', 'jew', 'kay', 'shun'];
+      if (index < overrides.length) return overrides[index];
+    }
+    if (word === 'helicopter') {
+      const overrides = ['he', 'lih', 'cop', 'tur'];
+      if (index < overrides.length) return overrides[index];
+    }
+    if (word === 'argument') {
+      const overrides = ['ar', 'gyou', 'ment'];
+      if (index < overrides.length) return overrides[index];
+    }
+    if (word === 'bucket') {
+      const overrides = ['buck', 'it'];
+      if (index < overrides.length) return overrides[index];
+    }
+    if (word === 'slime') {
+      const overrides = ['ss', 'lime'];
+      if (index < overrides.length) return overrides[index];
+    }
+    if (word === 'bait') return 'bate';
+    if (word === 'kitchen') {
+      const overrides = ['kit', 'chin'];
+      if (index < overrides.length) return overrides[index];
+    }
+    if (word === 'complementary') {
+      const overrides = ['kom', 'pluh', 'men', 'tuh', 'ree'];
+      if (index < overrides.length) return overrides[index];
+    }
+    if (word === 'purple') {
+      const overrides = ['purr', 'pull'];
+      if (index < overrides.length) return overrides[index];
+    }
+    if (word === 'turtle') {
+      const overrides = ['ter', 'tull'];
+      if (index < overrides.length) return overrides[index];
+    }
+    if (word === 'orange') {
+      const overrides = ['or', 'inj'];
+      if (index < overrides.length) return overrides[index];
+    }
+    if (word === 'yellow') {
+      const overrides = ['yel', 'loh'];
+      if (index < overrides.length) return overrides[index];
+    }
+    if (word === 'dolphin') {
+      const overrides = ['dol', 'fin'];
+      if (index < overrides.length) return overrides[index];
+    }
+    if (word === 'frightened') {
+      const overrides = ['frite', 'und'];
+      if (index < overrides.length) return overrides[index];
+    }
+    if (word === 'thirsty') {
+      const overrides = ['ther', 'stee'];
+      if (index < overrides.length) return overrides[index];
+    }
+    if (word === 'family') {
+      const overrides = ['fam', 'ih', 'lee'];
+      if (index < overrides.length) return overrides[index];
+    }
+    if (word === 'home') return 'home';
+    if (word === 'favourite' || word === 'favorite') {
+      const overrides = ['fay', 'vuh', 'rit'];
+      if (index < overrides.length) return overrides[index];
     }
 
     if (data.partsPronunciation && data.partsPronunciation[index]) {
       return data.partsPronunciation[index];
     }
+    
+    // Rule: "man" at the end of compound words is often "mun"
+    if (part === 'man' && data.parts.length > 1 && index > 0) {
+      return 'mun';
+    }
+
+    if (part.endsWith('le') && part.length > 2) {
+      return part.replace('le', 'ull');
+    }
+
     return data.parts[index];
   };
 
@@ -874,17 +1035,24 @@ export default function App() {
   };
 
   const processWordInput = async (word: string, date?: string, mode: 'observe' | 'challenge' = 'observe') => {
-    console.log("processWordInput called with:", word, "date:", date, "mode:", mode);
+    const trimmedWord = (word || "").trim();
+    console.log("processWordInput called with:", trimmedWord, "date:", date, "mode:", mode);
+    setValidationError(null);
     if (!currentUser) {
       console.warn("No current user, cannot process word input.");
+      setValidationError("Please log in to start learning words!");
+      return;
+    }
+    if (!trimmedWord) {
+      setValidationError("Please enter a word!");
       return;
     }
     setIsLoading(true);
     setPracticeDate(date || null);
     try {
-      console.log("Starting word processing...");
+      console.log("Starting word processing for:", trimmedWord);
       // Check local list first (which is already filtered by user)
-      const existing = allWordsList.find(w => w.word.toLowerCase() === word.toLowerCase());
+      const existing = allWordsList.find(w => w.word?.toLowerCase() === trimmedWord.toLowerCase());
       let data: WordData;
       let img: string;
 
@@ -893,7 +1061,7 @@ export default function App() {
         data = existing.data;
         
         // Patch for "cake" if it was previously split incorrectly
-        if (data.word.toLowerCase() === 'cake' && data.parts.length > 1) {
+        if (data.word?.toLowerCase() === 'cake' && data.parts.length > 1) {
             data.parts = ['cake'];
             data.partsPronunciation = ['cake'];
             await saveWordToDB(currentUser.id, currentUser.username, data, !date);
@@ -902,7 +1070,7 @@ export default function App() {
         // Check if image is missing or empty (e.g. from Eva-specific seed)
         if (!data.imageUrl || data.imageUrl === "") {
              try {
-                 img = await generateWordImage(word);
+                 img = await generateWordImage(trimmedWord);
                  data.imageUrl = img;
                  // Update DB with new image so we don't generate again next time
                  await saveWordToDB(currentUser.id, currentUser.username, data, !date);
@@ -937,7 +1105,7 @@ export default function App() {
       } else {
         console.log("Word not in local list, validating...");
         // Validate word before generating or searching
-        const validation = await validateWordInput(word);
+        const validation = await validateWordInput(trimmedWord);
         console.log("Validation result:", validation);
         if (!validation.isValid) {
             console.warn("Word validation failed:", validation.reason);
@@ -1009,7 +1177,7 @@ export default function App() {
       if (mode === 'challenge') {
           // Skip directly to test
           setStep(GameStep.STEP_4_TEST);
-          const parts = data.word.toLowerCase().split('').map((char, i) => ({ id: `${char}-${i}`, val: char }));
+          const parts = data.word?.toLowerCase().split('').map((char, i) => ({ id: `${char}-${i}`, val: char })) || [];
           setTestBank(shuffleArray(parts));
           setTestSlots(new Array(parts.length).fill(null));
           setIsWrongAnimation(false);
@@ -1264,7 +1432,7 @@ export default function App() {
       setOrderedParts(newOrdered);
       setUsedJumbledIndices([...usedJumbledIndices, idx]);
       if (newOrdered.length === wordData.parts.length) {
-          if (newOrdered.join('').toLowerCase() === wordData.word.toLowerCase()) {
+          if (newOrdered.join('').toLowerCase() === wordData?.word?.toLowerCase()) {
               playWinSound();
               setPracticeSuccess(true);
           } else {
@@ -1284,7 +1452,7 @@ export default function App() {
   const startStep4 = () => {
       setStep(GameStep.STEP_4_TEST);
       if (!wordData) return;
-      const parts = wordData.word.toLowerCase().split('').map((char, i) => ({ id: `${char}-${i}`, val: char }));
+      const parts = wordData.word?.toLowerCase().split('').map((char, i) => ({ id: `${char}-${i}`, val: char })) || [];
       setTestBank(shuffleArray(parts));
       setTestSlots(new Array(parts.length).fill(null));
       setIsWrongAnimation(false);
@@ -1318,7 +1486,7 @@ export default function App() {
   const handleTestSubmit = async () => {
       if (!wordData || !currentUser) return;
       const result = testSlots.map(s => s?.val).join('');
-      if (result.toLowerCase() === wordData.word.toLowerCase()) {
+      if (result?.toLowerCase() === wordData?.word?.toLowerCase()) {
           playWinSound();
           const timeTaken = (Date.now() - startTimeRef.current) / 1000;
           
@@ -1327,7 +1495,7 @@ export default function App() {
           await markWordAsReviewed(currentUser.id, wordData.word);
           
           // FIX: Use case-insensitive filtering for review queue
-          setReviewQueue(prev => prev.filter(r => r.word.toLowerCase() !== wordData.word.toLowerCase()));
+          setReviewQueue(prev => prev.filter(r => r.word?.toLowerCase() !== wordData.word?.toLowerCase()));
           
           // Refresh list for rhythm game based on the target date
           const targetDateWords = await getWordsByDate(currentUser.id, targetDate);
@@ -1772,10 +1940,10 @@ export default function App() {
           onExport={handleExportWords}
           onWordClick={(word, date) => processWordInput(word, date, 'observe')}
           onDeleteWord={(word) => {
-              const lowerWord = word.toLowerCase();
-              setAllWordsList(prev => prev.filter(w => w.word.toLowerCase() !== lowerWord));
+              const lowerWord = word?.toLowerCase() || '';
+              setAllWordsList(prev => prev.filter(w => (w.word?.toLowerCase() || '') !== lowerWord));
               setReviewQueue(prev => {
-                  const newQ = prev.filter(w => w.word.toLowerCase() !== lowerWord);
+                  const newQ = prev.filter(w => (w.word?.toLowerCase() || '') !== lowerWord);
                   if (newQ.length !== prev.length) {
                       setTodaysWordsCount(newQ.length);
                   }
@@ -1796,6 +1964,7 @@ export default function App() {
         
         <div className="relative w-full group">
           <input
+            ref={inputRef}
             type="text"
             value={inputTranscript}
             onChange={(e) => setInputTranscript(e.target.value)}
@@ -1847,18 +2016,6 @@ export default function App() {
             </GameButton>
           ) : null}
         </div>
-
-        {validationError && (
-          <div className="bg-red-50 border-4 border-red-100 rounded-3xl p-6 w-full text-center shadow-inner animate-shake">
-            <p className="text-red-500 font-black text-lg leading-tight">{validationError}</p>
-            <button 
-              onClick={() => setValidationError(null)}
-              className="mt-3 px-4 py-1 bg-red-100 text-red-500 rounded-full text-xs font-black uppercase tracking-widest hover:bg-red-200 transition-colors"
-            >
-              Try Again
-            </button>
-          </div>
-        )}
       </div>
 
       <button onClick={handleRestart} className="text-gray-300 font-black uppercase tracking-widest text-xs hover:text-gray-500 transition-colors">
@@ -1905,25 +2062,25 @@ export default function App() {
             </div>
             {/* Phonetic & Translation */}
             <div style={{ display: 'flex', justifyContent: 'center', gap: '8px', marginBottom: '8px', alignItems: 'center' }}>
-              <span style={{ background: '#f1f5f9', color: '#64748b', padding: '2px 10px', borderRadius: '12px', fontFamily: 'monospace', fontWeight: 600 }}>{wordData.phonetic}</span>
-              {wordData.partOfSpeech && (
+              <span style={{ background: '#f1f5f9', color: '#64748b', padding: '2px 10px', borderRadius: '12px', fontFamily: 'monospace', fontWeight: 600, textTransform: 'none' }}>{wordData?.phonetic?.toLowerCase()}</span>
+              {wordData?.partOfSpeech && (
                 <span style={{ fontSize: '14px', color: '#60a5fa', fontWeight: 600 }}>{wordData.partOfSpeech}</span>
               )}
-              <span style={{ fontSize: '14px', color: '#94a3b8', fontWeight: 500 }}>{wordData.translation}</span>
+              <span style={{ fontSize: '14px', color: '#94a3b8', fontWeight: 500 }}>{wordData?.translation}</span>
             </div>
             {/* Phrases */}
-            {wordData.phrases && wordData.phrases.length > 0 && (
+            {wordData?.phrases && wordData.phrases.length > 0 && (
               <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6px', justifyContent: 'center', marginBottom: '8px' }}>
                 {wordData.phrases.map((ph, idx) => <span key={idx} style={{ fontSize: '11px', background: '#fce7f3', color: '#db2777', padding: '3px 8px', borderRadius: '8px', fontWeight: 700, border: '1px solid #fbcfe8' }}>{ph}</span>)}
               </div>
             )}
             {/* Sentence */}
             <div style={{ background: '#fefce8', border: '2px dashed #fef08a', borderRadius: '12px', padding: '12px', color: '#854d0e', fontStyle: 'italic', fontSize: '15px' }}>
-              {wordData.sentence}
+              {wordData?.sentence}
             </div>
             {/* Root */}
-            <div style={{ fontSize: '11px', color: '#9ca3af', textTransform: 'uppercase', letterSpacing: '1px', fontWeight: 700, marginTop: '8px' }}>
-              {wordData.root}
+            <div style={{ fontSize: '11px', color: '#9ca3af', textTransform: 'none', letterSpacing: '1px', fontWeight: 700, marginTop: '8px' }}>
+              {wordData?.root?.toLowerCase()}
             </div>
           </div>
           <div style={{ width: '100%', background: '#eff6ff', color: '#bfdbfe', textAlign: 'center', fontSize: '10px', fontWeight: 700, letterSpacing: '2px', textTransform: 'uppercase', padding: '6px 0' }}>StarSpeller</div>
@@ -1989,7 +2146,7 @@ export default function App() {
                 >
                   {part.split('').map((char, charIdx) => (
                     <span key={charIdx} className={isVowel(char) && activePartHighlight !== i ? 'text-red-500' : 'text-inherit'}>
-                      {char}
+                      {char?.toLowerCase() || ''}
                     </span>
                   ))}
                 </button>
@@ -1998,14 +2155,14 @@ export default function App() {
 
             <div className="flex flex-col items-center gap-2 w-full">
               <div className="flex flex-wrap gap-x-4 gap-y-2 text-sm font-black text-gray-400 uppercase tracking-widest items-center justify-center">
-                <span className="bg-gray-100 px-2 py-0.5 rounded-md whitespace-nowrap">{wordData.phonetic}</span>
-                {wordData.partOfSpeech && (
+                <span className="bg-gray-100 px-2 py-0.5 rounded-md whitespace-nowrap normal-case">{wordData?.phonetic?.toLowerCase()}</span>
+                {wordData?.partOfSpeech && (
                   <div className="flex items-center gap-2">
                     <span className="text-gray-200">•</span>
                     <span className="text-blue-400 lowercase italic whitespace-nowrap">{wordData.partOfSpeech}</span>
                   </div>
                 )}
-                {wordData.translation && (
+                {wordData?.translation && (
                   <div className="flex items-center gap-2">
                     <span className="text-gray-200">•</span>
                     <span className="text-gray-400 text-base font-bold normal-case">{wordData.translation}</span>
@@ -2042,14 +2199,14 @@ export default function App() {
               </div>
             </div>
 
-            <div className="text-center group cursor-pointer bg-blue-50/50 p-4 rounded-2xl w-full border-2 border-dashed border-blue-100" onClick={() => speak(wordData.root)}>
+            <div className="text-center group cursor-pointer bg-blue-50/50 p-4 rounded-2xl w-full border-2 border-dashed border-blue-100" onClick={() => speak(getRootPronunciation(wordData))}>
               <div className="flex items-center justify-center gap-2">
                 <span className="text-[10px] font-black text-blue-400 uppercase tracking-[0.2em]">Memory Aid</span>
                 <svg className="w-4 h-4 text-blue-400" fill="currentColor" viewBox="0 0 20 20">
                   <path d="M10 18a8 8 0 100-16 8 8 0 000 16zM9.555 7.168A1 1 0 008 8v4a1 1 0 001.555.832l3-2a1 1 0 000-1.664l-3-2z" />
                 </svg>
               </div>
-              <p className="text-gray-600 font-bold mt-1 text-lg leading-snug">{wordData.root}</p>
+              <p className="text-gray-600 font-bold mt-1 text-lg leading-snug lowercase">{wordData.root}</p>
             </div>
           </div>
         </div>
@@ -2129,7 +2286,7 @@ export default function App() {
               >
                 {isDone ? (
                   <div className="flex items-center gap-2 font-black text-2xl">
-                    <span>{part}</span>
+                    <span>{part?.toLowerCase() || ''}</span>
                     <div className="bg-green-500 text-white rounded-full p-0.5">
                       <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={4}>
                         <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
@@ -2220,7 +2377,7 @@ export default function App() {
                 onClick={() => speak(getPartPronunciation(wordData, i))}
                 className="text-4xl font-black text-blue-600 bg-white px-6 py-4 rounded-3xl shadow-[0_8px_0_#dbeafe] border-2 border-blue-50 hover:scale-105 active:scale-95 active:shadow-none active:translate-y-2 transition-all"
               >
-                {part}
+                {part?.toLowerCase() || ''}
               </button>
             ))}
           </div>
@@ -2247,7 +2404,7 @@ export default function App() {
               {orderedParts.length === 0 && <span className="text-gray-400 font-bold opacity-50">tap blocks below</span>}
               {orderedParts.map((p, i) => (
                 <span key={i} className="text-3xl font-black text-white bg-blue-400 px-3 py-1 rounded-lg border-b-4 border-blue-600 shadow-sm animate-fade-in-up">
-                  {p}
+                  {p?.toLowerCase() || ''}
                 </span>
               ))}
             </div>
@@ -2351,7 +2508,7 @@ export default function App() {
     );
   };
 
-  useEffect(() => {
+  React.useEffect(() => {
     if (step === GameStep.STEP_4_APPLICATION && wordData) {
       setTimeout(() => {
         speak(wordData.sentence);
@@ -2361,7 +2518,7 @@ export default function App() {
 
   const handleApplicationSubmit = () => {
     if (!wordData || isApplicationComplete) return;
-    if (applicationInput.toLowerCase().trim() === wordData.word.toLowerCase().trim()) {
+    if (applicationInput.toLowerCase().trim() === wordData?.word?.toLowerCase().trim()) {
       playWinSound();
       setIsApplicationComplete(true);
       speak(wordData.sentence);
@@ -2409,7 +2566,7 @@ export default function App() {
             <div className={`text-2xl font-black leading-relaxed italic flex flex-wrap justify-center items-center gap-x-2 ${isApplicationComplete ? 'text-blue-700' : 'text-gray-800'}`}>
               <span>"</span>
               {parts.map((part, i) => {
-                if (part.toLowerCase() === wordData.word.toLowerCase()) {
+                if (part?.toLowerCase() === wordData?.word?.toLowerCase()) {
                   if (isApplicationComplete) {
                     return (
                       <span 
@@ -2524,14 +2681,14 @@ export default function App() {
               <div className={`flex-1 w-full flex flex-col justify-center items-center gap-8 p-4 z-10 ${rhythmShake ? 'animate-shake' : ''}`}>
                   <div className="text-center w-full">
                        {isWordComplete && <p className="text-green-400 font-bold mb-2 animate-bounce">Perfect!</p>}
-                       <div className={`text-4xl font-black tracking-widest uppercase break-words px-4 flex flex-wrap justify-center gap-1 ${isWordComplete ? 'scale-110 transition-transform duration-500' : ''}`}>{currentWord.parts.map((part, index) => { let colorClass = "text-slate-600"; if (isWordComplete) colorClass = "text-green-400 drop-shadow-[0_0_10px_rgba(74,222,128,0.5)]"; else if (index < rhythmPartIndex) colorClass = "text-green-500"; else if (index === rhythmPartIndex) colorClass = "text-white scale-110"; return (<span key={index} className={`transition-all duration-300 ${colorClass}`}>{part}</span>); })}</div>
+                       <div className={`text-4xl font-black tracking-widest normal-case break-words px-4 flex flex-wrap justify-center gap-1 ${isWordComplete ? 'scale-110 transition-transform duration-500' : ''}`}>{currentWord.parts.map((part, index) => { let colorClass = "text-slate-600"; if (isWordComplete) colorClass = "text-green-400 drop-shadow-[0_0_10px_rgba(74,222,128,0.5)]"; else if (index < rhythmPartIndex) colorClass = "text-green-500"; else if (index === rhythmPartIndex) colorClass = "text-white scale-110"; return (<span key={index} className={`transition-all duration-300 ${colorClass}`}>{part?.toLowerCase() || ''}</span>); })}</div>
                   </div>
                   <div className={`w-24 h-24 rounded-full bg-slate-800 border-4 border-violet-500 flex items-center justify-center shadow-[0_0_30px_rgba(139,92,246,0.4)] transition-all ${isWordComplete ? 'scale-125 bg-green-900 border-green-500' : 'animate-pulse'}`}><span className="text-4xl">{isWordComplete ? '✅' : '🔊'}</span></div>
                   <div className="w-full flex-1 min-h-[16rem] relative flex flex-col justify-end">
                     {isWordComplete ? (
                         <div className="absolute inset-0 flex items-center justify-center animate-fade-in-up z-20">
                             <div className="bg-slate-900/90 backdrop-blur-xl px-10 py-8 rounded-3xl border-2 border-slate-600/50 text-center shadow-[0_0_50px_rgba(0,0,0,0.6)] transform scale-105">
-                                {rhythmWordIndex + 1 < rhythmQueue.length ? (<><p className="text-violet-400 font-bold uppercase text-xs tracking-widest mb-3">Up Next</p><div className="text-5xl font-black text-white mb-6 tracking-tight drop-shadow-lg">{rhythmQueue[rhythmWordIndex + 1].word}</div><div className="flex items-center justify-center gap-2"><div className="w-2 h-2 rounded-full bg-violet-500 animate-bounce" style={{ animationDelay: '0ms' }}></div><div className="w-2 h-2 rounded-full bg-violet-500 animate-bounce" style={{ animationDelay: '150ms' }}></div><div className="w-2 h-2 rounded-full bg-violet-500 animate-bounce" style={{ animationDelay: '300ms' }}></div></div></>) : (<div className="text-3xl font-black text-green-400 animate-bounce">Set Finished!</div>)}
+                                {rhythmWordIndex + 1 < rhythmQueue.length ? (<><p className="text-violet-400 font-bold uppercase text-xs tracking-widest mb-3">Up Next</p><div className="text-5xl font-black text-white mb-6 tracking-tight drop-shadow-lg">{rhythmQueue[rhythmWordIndex + 1]?.word?.toLowerCase() || ''}</div><div className="flex items-center justify-center gap-2"><div className="w-2 h-2 rounded-full bg-violet-500 animate-bounce" style={{ animationDelay: '0ms' }}></div><div className="w-2 h-2 rounded-full bg-violet-500 animate-bounce" style={{ animationDelay: '150ms' }}></div><div className="w-2 h-2 rounded-full bg-violet-500 animate-bounce" style={{ animationDelay: '300ms' }}></div></div></>) : (<div className="text-3xl font-black text-green-400 animate-bounce">Set Finished!</div>)}
                             </div>
                         </div>
                     ) : (<div className="grid grid-cols-2 gap-4 w-full">{rhythmFallingOptions.map((opt, i) => (<button key={i + opt} onClick={() => handleRhythmHit(opt)} className="relative w-full py-4 rounded-xl font-black text-2xl bg-slate-800 text-white border-b-4 border-slate-950 hover:bg-slate-700 hover:border-violet-500 hover:text-violet-300 active:border-b-0 active:translate-y-2 transition-all duration-100 shadow-xl overflow-hidden animate-fade-in-up" style={{ animationDelay: `${i * 100}ms` }}>{opt}<div className="absolute top-0 left-0 w-full h-1/2 bg-white/5"></div></button>))}</div>)}
@@ -2589,6 +2746,8 @@ export default function App() {
       );
     }
 
+    if (!wordData) return null;
+
     return (
       <div className="flex flex-col items-center justify-center min-h-[calc(100vh-14rem)] gap-8 p-6 text-center animate-fade-in-up">
           <div className="relative">
@@ -2600,17 +2759,28 @@ export default function App() {
             <p className="text-gray-400 font-bold">You mastered a new word!</p>
           </div>
           
-          <div className="bg-white p-8 rounded-[2.5rem] shadow-xl border-4 border-green-100 w-full max-w-sm relative overflow-hidden">
-              <div className="absolute top-0 left-0 w-full h-1 bg-green-400"></div>
-              <h3 className="text-4xl font-black text-blue-600 mb-2 tracking-tight">{wordData?.word.toLowerCase()}</h3>
+          <div 
+            onClick={() => wordData && speak(wordData.word)}
+            className="bg-white p-8 rounded-[2.5rem] shadow-xl border-4 border-green-100 w-full max-w-sm relative overflow-hidden cursor-pointer group active:scale-[0.98] transition-all hover:border-green-300"
+          >
+              <div className="absolute top-0 left-0 w-full h-1 bg-green-400 group-hover:h-2 transition-all"></div>
+              <div className="flex items-center justify-center gap-3 mb-2">
+                <h3 className="text-4xl font-black text-blue-600 tracking-tight group-hover:scale-105 transition-transform">{wordData?.word?.toLowerCase()}</h3>
+                <div className="text-blue-400 group-hover:scale-110 transition-transform">
+                  <svg xmlns="http://www.w3.org/2000/svg" className="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15.536 8.464a5 5 0 010 7.072m2.828-9.9a9 9 0 010 12.728M5.586 15H4a1 1 0 01-1-1v-4a1 1 0 011-1h1.586l4.707-4.707C10.923 3.663 12 4.109 12 5v14c0 .891-1.077 1.337-1.707.707L5.586 15z" />
+                  </svg>
+                </div>
+              </div>
               <div className="flex justify-center items-center gap-3">
                   {wordData?.partOfSpeech && (
-                      <span className="bg-blue-50 text-blue-500 px-3 py-1 rounded-full text-xs font-black lowercase tracking-widest">{wordData.partOfSpeech.toLowerCase()}</span>
+                      <span className="bg-blue-50 text-blue-500 px-3 py-1 rounded-full text-xs font-black lowercase tracking-widest">{String(wordData.partOfSpeech).toLowerCase()}</span>
                   )}
                   {wordData?.translation && (
                       <span className="text-gray-400 text-lg font-bold">{wordData.translation}</span>
                   )}
               </div>
+              <p className="mt-4 text-xs text-gray-300 font-bold uppercase tracking-widest animate-pulse">Tap to hear again</p>
           </div>
 
           <div className="flex flex-col gap-4 w-full max-w-xs">
@@ -3030,6 +3200,7 @@ export default function App() {
               onClick={() => {
                 setValidationError(null);
                 setInputTranscript("");
+                setTimeout(() => inputRef.current?.focus(), 100);
               }} 
               color="blue" 
               className="w-full"

@@ -56,13 +56,14 @@ export interface WordValidationResult {
 }
 
 export const validateWordInput = async (word: string): Promise<WordValidationResult> => {
+  console.log("validateWordInput called for:", word);
   const apiKey = getApiKey();
   if (!apiKey) {
     return { isValid: false, reason: "API key is missing. Please set GEMINI_API_KEY in Settings > Secrets." };
   }
   const ai = new GoogleGenAI({ apiKey });
   return withRetry(async () => {
-    const model = 'gemini-3-flash-preview';
+    const model = 'gemini-2.0-flash';
     const response = await ai.models.generateContent({
       model,
       contents: `Validate the word: "${word}"`,
@@ -96,13 +97,14 @@ export const validateWordInput = async (word: string): Promise<WordValidationRes
 };
 
 export const generateWordData = async (word: string): Promise<WordData> => {
+  console.log("generateWordData called for:", word);
   const apiKey = getApiKey();
   if (!apiKey) {
     throw new Error("API key is missing. Please set GEMINI_API_KEY in Settings > Secrets.");
   }
   const ai = new GoogleGenAI({ apiKey });
   return withRetry(async () => {
-    const model = 'gemini-3-flash-preview';
+    const model = 'gemini-2.0-flash';
     
     const response = await ai.models.generateContent({
       model,
@@ -114,9 +116,10 @@ export const generateWordData = async (word: string): Promise<WordData> => {
         1. "parts": Break the word into **Spelling Chunks** using a **Right-to-Left** analysis strategy.
            - **Rule 1 (Right-to-Left, Vowel+Consonant)**: Scan from right to left. Group one vowel sound with its leading consonant(s).
            - **Rule 2 (Silent E)**: 'e' at the end of a word is silent and does NOT count as a vowel. It belongs to the preceding group.
-           - **Rule 3 (Vowel Teams)**: Vowel digraphs (e.g., 'ai', 'ea', 'oa', 'ou', 'ir', 'er', 'ur') count as ONE vowel sound.
-           - **Rule 4 (Ends)**: Keep suffixes intact where possible (e.g., 'ment', 'tion', 'ing').
-           - **Rule 5 (Single Vowel Sound)**: If a word has only one vowel sound (like 'cake', 'bird', 'shirt', 'make', 'bike'), do NOT split it. It is a single chunk.
+           - **Rule 3 (Vowel Teams)**: Vowel digraphs (e.g., 'ai', 'ea', 'oa', 'ou', 'ir', 'er', 'ur', 'oo', 'ee', 'oy', 'oi') count as ONE vowel sound.
+           - **Rule 4 (Suffixes)**: Keep common suffixes intact (e.g., 'ment', 'tion', 'sion', 'ing', 'able', 'ible', 'ness', 'full', 'less', 'ly').
+           - **Rule 5 (Single Vowel Sound)**: If a word has only one vowel sound (like 'cake', 'bird', 'shirt', 'make', 'bike', 'strength'), do NOT split it. It is a single chunk.
+           - **Rule 6 (Consonant Clusters)**: Keep common consonant clusters together if they start a syllable (e.g., 'str', 'spl', 'thr', 'shr', 'ph', 'ch', 'sh', 'th').
            - **Specific Override**: For "bird", use ["bird"].
            - **Specific Override**: For "shirt", use ["shirt"].
            - **Specific Override**: For "favourite", use ["fa", "vou", "rite"].
@@ -140,6 +143,12 @@ export const generateWordData = async (word: string): Promise<WordData> => {
            - **Specific Override**: For "frightened", use ["fright", "ened"].
            - **Specific Override**: For "thirsty", use ["thirs", "ty"].
            - **Specific Override**: For "family", use ["fam", "i", "ly"].
+           - **Specific Override**: For "fireman", use ["fire", "man"].
+           - **Specific Override**: For "home", use ["home"].
+           - **Specific Override**: For "beautiful", use ["beau", "ti", "ful"].
+           - **Specific Override**: For "dinosaur", use ["di", "no", "saur"].
+           - **Specific Override**: For "elephant", use ["e", "le", "phant"].
+           - **Specific Override**: For "computer", use ["com", "pu", "ter"].
            - **Goal**: Every part should be a pronounceable chunk, ideally following "One Vowel One Consonant" flow where the consonant leads the next vowel.
         2. "partsPronunciation": An array of simple English strings mirroring "parts" to help a TTS engine pronounce the syllable correctly in isolation.
            - **Crucial**: The goal is standard American pronunciation.
@@ -164,9 +173,15 @@ export const generateWordData = async (word: string): Promise<WordData> => {
            - **Specific Override**: "fright" in frightened -> "frite". "ened" in frightened -> "und".
            - **Specific Override**: "thirs" in thirsty -> "ther". "ty" in thirsty -> "stee".
            - **Specific Override**: "fam" in family -> "fam". "i" in family -> "ih". "ly" in family -> "lee".
+           - **Specific Override**: "fire" in fireman -> "fire". "man" in fireman -> "mun".
+           - **Specific Override**: "home" in home -> "home".
            - **Specific Override**: "vou" in favourite -> "vuh". "rite" in favourite -> "rit".
            - **Specific Override**: "vo" in favorite -> "vuh". "rite" in favorite -> "rit".
            - **Specific Override**: "ca" in education -> "kay". "du" in education -> "jew".
+           - **Specific Override**: "beau" in beautiful -> "byou". "ti" in beautiful -> "tih". "ful" in beautiful -> "full".
+           - **Specific Override**: "di" in dinosaur -> "die". "no" in dinosaur -> "noh". "saur" in dinosaur -> "sore".
+           - **Specific Override**: "e" in elephant -> "eh". "le" in elephant -> "luh". "phant" in elephant -> "funt".
+           - **Specific Override**: "com" in computer -> "kum". "pu" in computer -> "pyou". "ter" in computer -> "tur".
         3. "partOfSpeech": The part of speech abbreviation (e.g., "n.", "v.", "adj.", "adv.").
         4. "root": A very simple memory aid or mnemonic for kids. Avoid complex Latin etymology.
            - **Specific Override**: For "purple", use "purr (like a cat) + ple (sounds like pull)".
@@ -176,6 +191,8 @@ export const generateWordData = async (word: string): Promise<WordData> => {
            - **Specific Override**: For "frightened", use "fright (like light) + ened (sounds like und)".
            - **Specific Override**: For "thirsty", use "thirs (like first) + ty (sounds like tee)".
            - **Specific Override**: For "family", use "fam (like ham) + i (sounds like ih) + ly (sounds like lee)".
+           - **Specific Override**: For "fireman", use "fire (hot!) + man (person)".
+           - **Specific Override**: For "home", use "home (like bone)".
         5. "phonetic": **Standard US English IPA**.
         6. "translation": The Chinese translation of the word.
         7. "sentence": Simple example sentence.
@@ -282,7 +299,7 @@ export const generateWordImage = async (word: string): Promise<string> => {
   try {
     // Explicitly using gemini-2.5-flash-image for image generation
     const model = 'gemini-2.5-flash-image';
-    const prompt = `A cute, colorful, cartoon-style illustration for children representing the word: "${word}". Simple background, vector art style.`;
+    const prompt = `A high-quality, 3D render style, cute cartoon illustration for children representing the word: "${word}". Vibrant colors, soft lighting, clean white background, professional digital art, centered composition.`;
     
     // Attempt generation with retry
     const rawImage = await withRetry(async () => {

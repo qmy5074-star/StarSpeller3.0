@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import * as React from 'react';
 import { DailyStats, DBWordRecord, WordData } from '../types';
 import { getAllDailyStats, getAllWords, deleteWordFromDB } from '../services/dbService';
 
@@ -16,8 +16,8 @@ interface LibraryPageProps {
 }
 
 const LibraryPage: React.FC<LibraryPageProps> = ({ userId, allDailyStats, viewingMonth, onMonthChange, onStartChallenge, onBack, onImport, onExport, onWordClick, onDeleteWord }) => {
-  const [wordsMap, setWordsMap] = useState<Record<string, DBWordRecord[]>>({});
-  const [selectedDate, setSelectedDate] = useState<string | null>(null);
+  const [wordsMap, setWordsMap] = React.useState<Record<string, DBWordRecord[]>>({});
+  const [selectedDate, setSelectedDate] = React.useState<string | null>(null);
   const clickTimer = React.useRef<NodeJS.Timeout | null>(null);
   const lastClickTime = React.useRef<number>(0);
 
@@ -27,7 +27,7 @@ const LibraryPage: React.FC<LibraryPageProps> = ({ userId, allDailyStats, viewin
     return sMap;
   }, [allDailyStats]);
 
-  useEffect(() => {
+  React.useEffect(() => {
     loadData();
   }, [userId]);
 

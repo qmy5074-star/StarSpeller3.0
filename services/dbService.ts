@@ -152,7 +152,7 @@ export const getAllUsers = async (): Promise<User[]> => {
 
 export const createNewUser = async (username: string, password?: string): Promise<User> => {
   const users = await getAllUsers();
-  if (users.some(u => u.username.toLowerCase() === username.toLowerCase())) {
+  if (users.some(u => u.username?.toLowerCase() === username?.toLowerCase())) {
     throw new Error("Username already exists");
   }
 
@@ -179,7 +179,7 @@ export const createNewUser = async (username: string, password?: string): Promis
 
 export const deleteUserByUsername = async (username: string): Promise<void> => {
   const users = await getAllUsers();
-  const userToDelete = users.find(u => u.username.toLowerCase() === username.toLowerCase());
+  const userToDelete = users.find(u => u.username?.toLowerCase() === username?.toLowerCase());
   if (!userToDelete) return;
 
   const db = await openDB();
